@@ -2,7 +2,7 @@ import { io, type Socket } from 'socket.io-client';
 
 /** Conexão de sinalização na mesma origem (em dev, o Vite faz proxy para :3000). */
 export function createSocket(): Socket {
-  return io({
+  return io(import.meta.env.VITE_BACKEND_URL || window.location.origin, {
     transports: ['websocket'],
     reconnection: true,
     reconnectionDelay: 500,
