@@ -11,17 +11,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(here, '../../client/dist');
 
 const app = express();
+app.disable('x-powered-by');
 app.use((req, res, next) => {
-  const origin = process.env.FRONTEND_URL;
-
-  if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+  const allowed = process.env.FRONTEND_URL?.replace(/\/$/, '');
+  if (allowed && req.headers.origin === allowed) {
+    res.setHeader('Access-Control-Allow-Origin', allowed);
     res.setHeader('Vary', 'Origin');
   }
-
   next();
 });
-app.disable('x-powered-by');
 if (TRUST_PROXY) app.set('trust proxy', true);
 
 app.use((_req, res, next) => {
@@ -96,13 +94,10 @@ if (fs.existsSync(clientDist)) {
 
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-    origin: process.env.FRONTEND_URL,
-    methods: ['GET', 'POST'],
-  },
   maxHttpBufferSize: 1e5, // sinalização só carrega SDP/ICE
   pingInterval: 5000,
   pingTimeout: 8000,
+  cors: { origin: process.env.FRONTEND_URL ? [process.env.FRONTEND_URL.replace(/\/$/, '')] : true },
 });
 
 type Ack = (res: Record<string, unknown>) => void;
@@ -132,6 +127,18 @@ io.on('connection', (socket) => {
     activityId = id;
     socket.join(`activity:${id}`);
     ack?.({ ok: true, streams: activityList(id) });
+  });
+  // The broadcaster itself announces an active stream: no copied links or names.
+  socket.on('activity:publish', (payload: { instanceId?: string; roomId?: string } | undefined, ack?: Ack) => {
+    const id = activityKey(payload?.instanceId);
+    const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
+    if (!id || !room || room.passwordHash || room.hostSocketId !== socket.id) return ack?.({ ok: false, error: 'not_host' });
+    const list = activityList(id);
+    if (!list.some(s => s.roomId === room.id) && list.length >= 4) return ack?.({ ok: false, error: 'activity_full' });
+    const next = [...list.filter(s => s.roomId !== room.id), { roomId: room.id, title: `Tela ${list.length + 1}` }];
+    activityStreams.set(id, next);
+    io.to(`activity:${id}`).emit('activity:streams', next);
+    ack?.({ ok: true });
   });
   socket.on('activity:add', (payload: { roomId?: string; title?: string } | undefined, ack?: Ack) => {
     if (!activityId || !hit(`activity-edit:${socket.id}`, 20, 60_000)) return ack?.({ ok: false, error: 'rate_limited' });

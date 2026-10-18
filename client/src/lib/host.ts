@@ -79,6 +79,10 @@ export class HostBroadcaster {
       throw new Error(res.error === 'rate_limited' ? 'Muitas salas criadas. Aguarde um minuto.' : 'Falha ao criar a sala.');
     }
     this.roomId = res.roomId;
+    const instance = new URLSearchParams(location.search).get('activity_instance');
+    if (instance && !password) {
+      this.socket.emit('activity:publish', { instanceId: instance, roomId: res.roomId });
+    }
     this.hostToken = res.hostToken;
     this.iceServers = res.iceServers ?? [];
     this.hasTurn = !!res.turn;
@@ -128,6 +132,8 @@ export class HostBroadcaster {
         return;
       }
       if (res.iceServers) this.iceServers = res.iceServers;
+      const instance = new URLSearchParams(location.search).get('activity_instance');
+      if (instance && this.roomId) this.socket.emit('activity:publish', { instanceId: instance, roomId: this.roomId });
       this.h.onStatus('live');
       this.h.onNotify('success', 'Reconectado ao servidor');
       const alive = new Set((res.viewers ?? []).map((v) => v.id));
