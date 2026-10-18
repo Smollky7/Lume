@@ -1,6 +1,6 @@
 {
   "name": "lume",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Transmissão de tela em tempo real via WebRTC, direto do navegador.",
   "workspaces": [
@@ -8,13 +8,15 @@
     "client"
   ],
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
     "dev": "concurrently -k -n server,client -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client && npm run build -w server",
     "start": "node server/dist/index.js",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w client"
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+    "test": "node --test server/test/*.test.mjs",
+    "discord:register": "node scripts/register-discord-command.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.0.0"

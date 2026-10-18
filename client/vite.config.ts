@@ -7,6 +7,15 @@ export default defineConfig({
     host: true,
     port: 5173,
     proxy: {
+      '/.proxy/backend/socket.io': {
+        target: 'http://localhost:3000',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/\.proxy\/backend/, ''),
+      },
+      '/.proxy/backend/api': {
+        target: 'http://localhost:3000',
+        rewrite: (path) => path.replace(/^\/\.proxy\/backend/, ''),
+      },
       '/socket.io': { target: 'http://localhost:3000', ws: true },
       '/api': 'http://localhost:3000',
     },

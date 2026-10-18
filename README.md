@@ -1,89 +1,236 @@
-# Lume — transmissão de tela pelo navegador
+# Lume
 
-Compartilhe sua tela (com áudio) com amigos por um link, usando WebRTC. Sem Discord, sem instalar nada para quem assiste.
+Transmissão de tela pelo navegador com WebRTC, descoberta automática das transmissões em uma Discord Activity e sinalização em tempo real com Socket.IO.
 
-> **Status:** o código foi escrito de ponta a ponta, mas **ainda não foi compilado nem testado com dois computadores**. Rode `npm run typecheck` e siga o roteiro de teste abaixo; se algo falhar, me mande a mensagem de erro que eu corrijo.
+## Validação desta entrega — 18/10/2026
 
-## Arquitetura (e por quê)
+Base usada: commit `1519d475b1686edd2e529a6ea58f6874e96020a8` da branch `main`, com os metadados inválidos `:Zone.Identifier` removidos do pacote.
 
-- **Mídia:** WebRTC *peer-to-peer*, do anfitrião para cada espectador. Vídeo + áudio vão no mesmo `MediaStream`, o que mantém tudo sincronizado. Latência típica de 100–300 ms, sem servidor de mídia no meio.
-- **Sinalização:** Node + Socket.IO (WebSocket). Só troca SDP/ICE, cria salas, valida senha e conta espectadores.
-- **Áudio:** sistema + microfone são misturados no navegador (Web Audio) em uma única faixa Opus estéreo. Ligar/desligar o microfone não renegocia a conexão.
-- **Adaptação de bitrate:** o controle de congestionamento do WebRTC reduz qualidade sozinho quando há perda; o app define apenas o teto de bitrate/FPS e a prioridade (fluidez × nitidez). O espectador pode pedir 720p/480p/360p; o anfitrião reduz só aquele fluxo.
-- **Reconexão:** socket reconecta sozinho; falha de ICE → reinício de ICE; se não recuperar, o espectador pede nova oferta. O anfitrião tem 30 s de tolerância se cair.
-- **Por que P2P e não SFU agora:** com poucos amigos (até ~4–6) é o caminho mais simples, de menor latência e sem compilar módulos nativos no Windows (mediasoup exige toolchain C++). **Limite real:** o seu *upload* é multiplicado pelo número de espectadores (1080p60 ≈ 8 Mbps × N). Para salas maiores, o próximo passo é um SFU (LiveKit) — a sinalização e a UI se reaproveitam.
+Executado com sucesso neste código:
 
-## Rodar no Windows 11
+- `npm ci --include=dev`;
+- `npm run typecheck`;
+- `npm run build` (frontend Vite 8.3.4 e backend TypeScript);
+- `npm test` — 2 testes aprovados;
+- instalação auditada pelo npm — 0 vulnerabilidades conhecidas.
 
-Pré-requisito: nenhum — `setup.bat` instala o Node.js LTS via `winget` se faltar.
+Os testes automatizados cobrem criação de sala, publicação automática na Activity, entrada do espectador, retransmissão Socket.IO e remoção da tela ao encerrar. Não foi possível testar esta entrega já implantada na Vercel/Render nem executar o fluxo em clientes reais Discord desktop/mobile, pois isso exige as contas, configurações e credenciais do usuário. Portanto, o teste real descrito abaixo continua obrigatório.
 
-1. Duplo clique em **`setup.bat`** (instala dependências e compila).
-2. Duplo clique em **`start.bat`** → abra <http://localhost:3000>.
-3. Para amigos de fora da sua rede, em outra janela: **`tunnel.bat`** (Cloudflare Tunnel, HTTPS grátis, sem abrir portas). Ele imprime `https://algo.trycloudflare.com`. **Abra esse endereço no seu próprio navegador** para transmitir; os convites já saem com ele.
+## O que esta versão resolve
 
-Desenvolvimento: `npm run dev` (frontend em :5173 com proxy para o servidor em :3000).
+- frontend continua na Vercel e backend continua no Render;
+- a Activity usa o URL Mapping `/backend` para Socket.IO/WebSocket;
+- quem inicia uma transmissão pela Activity publica a sala automaticamente na chamada;
+- os demais participantes veem todas as transmissões disponíveis, sem colar links;
+- ao tocar em **Assistir**, o navegador abre o player e entra como `Convidado`, sem pedir nome;
+- inclui um comando idempotente para criar ou reparar o `PRIMARY_ENTRY_POINT` necessário no Discord mobile;
+- inclui `package-lock.json`, build separado do backend no Render e testes de integração.
 
-## Testar com dois computadores em redes diferentes
+### Limite oficial do Discord
 
-1. PC A: `start.bat` + `tunnel.bat`. Abra a URL `https://…trycloudflare.com` no PC A.
-2. Clique em **Escolher tela**, selecione **Tela inteira** (ou uma aba) e marque **Compartilhar áudio**. Confira a prévia.
-3. Clique em **Iniciar transmissão** e copie o link.
-4. PC B (outra rede, ex.: 4G do celular) abre o link, escolhe um apelido e clica **Entrar e assistir**.
-5. Confira no painel do anfitrião, para cada espectador: **direto** ou **via TURN**, ping, Mbps, fps, codec e **GPU/CPU** (indica se a codificação é por hardware). No player do espectador, o indicador mostra latência estimada, perda e bitrate.
-6. Teste: pausar/retomar, trocar qualidade no espectador, desligar o Wi‑Fi do espectador por alguns segundos (deve reconectar), encerrar a sala (espectador vê aviso).
+O proxy de Discord Activities suporta WebSocket, mas não suporta WebRTC. Por isso a lista compartilhada funciona dentro da Activity, enquanto captura e reprodução abrem no navegador externo. Isso é intencional: tentar colocar o player WebRTC dentro do iframe da Activity não é uma configuração suportada pelo Discord.
 
-## NAT, TURN e hospedagem — o que é verdade
+Documentação oficial: <https://docs.discord.com/developers/activities/development-guides/networking>.
 
-- **HTTPS + sinalização:** o Cloudflare Tunnel resolve (HTTPS e WebSocket). Mas ele **não transporta a mídia WebRTC (UDP)**.
-- **Mídia:** conecta direto via STUN quando os NATs permitem. **Muitas operadoras brasileiras usam CGNAT**, e nesses casos a conexão direta costuma falhar — aí é **obrigatório um servidor TURN**, e o vídeo passa pelo relay (consome a banda do TURN).
-- **Sintoma de falta de TURN:** a página abre, a sala é criada, mas o espectador fica em "Estabelecendo a conexão de vídeo…" e depois vê "Sem rota de vídeo". O painel do anfitrião também avisa.
-- **TURN gratuito (valores consultados em out/2026 — confira se mudaram):**
-  - **Cloudflare Realtime TURN:** 1.000 GB/mês grátis (compartilhado com o SFU), depois US$ 0,05/GB. Crie uma *TURN key* no painel da Cloudflare e coloque no `.env`:
-    ```
-    CF_TURN_KEY_ID=...
-    CF_TURN_API_TOKEN=...
-    ```
-  - **Metered:** plano grátis de 20 GB/mês, com cadastro. No `.env`: `ICE_API_URL=https://SEUAPP.metered.live/api/v1/turn/credentials?apiKey=SUA_CHAVE`
-  - **Credenciais fixas de qualquer provedor:**
-    ```
-    TURN_URLS=turn:HOST:3478?transport=udp,turns:HOST:5349?transport=tcp
-    TURN_USERNAME=...
-    TURN_CREDENTIAL=...
-    ```
-  Depois de editar o `.env`, pare o servidor (`Ctrl+C`) e rode `npm start` de novo. Ele imprime no início se o TURN foi detectado.
-- **TURN próprio:** coturn não roda nativamente no Windows; use um VPS Linux (ver abaixo) com `TURN_SECRET` (credenciais temporárias).
-- **Hospedagens gratuitas (Render, Vercel, etc.):** servem a sinalização, mas não oferecem UDP/TURN. Não resolvem a mídia sozinhas.
+## Fluxo para o usuário
 
-## Implantação em servidor próprio
+1. Abra o Lume pelo lançador de Apps/Activities da chamada.
+2. Toque em **Transmitir tela**.
+3. O Discord abre o frontend da Vercel no navegador.
+4. Escolha a tela e inicie a transmissão sem senha.
+5. A transmissão aparece automaticamente para todos na mesma instância da Activity.
+6. Cada participante toca em **Assistir** e o player abre já conectado.
 
-`deploy/docker-compose.yml` sobe app + Caddy (HTTPS automático) + coturn. Instruções no cabeçalho do arquivo. Portas: 80, 443, 3478 (udp/tcp) e 49152–49252/udp.
+Salas protegidas por senha continuam disponíveis pelo link normal, mas não são publicadas automaticamente na Activity.
 
-## Limitações reais dos navegadores
+## Requisitos
 
-- **Áudio do sistema:** Chrome/Edge no Windows capturam áudio de **Tela inteira** e **Abas**, não de janelas individuais. Firefox e Safari geralmente não entregam áudio do sistema. O app avisa quando o áudio não vem.
-- **DRM (Netflix, Prime, etc.):** conteúdo protegido aparece **preto** na captura. Isso é uma proteção do navegador/sistema e **o Lume não tenta contorná-la**.
-- **1440p/4K:** dependem da resolução da sua tela, da CPU/GPU e do upload. O navegador pode entregar menos do que o pedido; os números reais aparecem no painel.
-- **Celular como anfitrião:** a maioria dos navegadores móveis não permite compartilhar tela. Como espectador, funciona.
-- **Latência < 500 ms:** esperado com conexão direta; via TURN distante ou rede ruim pode passar disso.
+- Node.js 20.19+ ou 22.12+ (Node 24 recomendado);
+- aplicação criada no Discord Developer Portal com Activities habilitadas;
+- projeto do frontend na Vercel;
+- Web Service do backend no Render;
+- TURN configurado no Render para redes com NAT/CGNAT.
 
-## Segurança e privacidade
+## Instalação e validação local
 
-- A captura só começa após o seletor nativo do navegador; a transmissão só inicia ao clicar em **Iniciar transmissão**.
-- IDs de sala têm 72 bits aleatórios; senha opcional com `scrypt`; limite de tentativas por IP; só o anfitrião (com token secreto) pode sinalizar ofertas, pausar ou encerrar.
-- Nenhuma gravação é feita — o servidor nunca recebe áudio/vídeo.
-- Cabeçalhos de segurança (CSP, `X-Frame-Options`, etc.) ativos. Atrás de proxy, mantenha `TRUST_PROXY=true`.
-- Qualquer pessoa com o link (e a senha, se houver) assiste — compartilhe com cuidado e feche janelas sensíveis antes de transmitir.
+Na raiz do projeto:
+
+```powershell
+npm ci
+npm run typecheck
+npm run build
+npm test
+```
+
+Para executar tudo localmente:
+
+```powershell
+npm run start
+```
+
+O backend abre em `http://localhost:3000`. Para desenvolvimento com atualização automática, use `npm run dev` e abra `http://localhost:5173`.
+
+## Deploy do backend no Render
+
+Crie ou atualize um **Web Service** usando a raiz do repositório.
+
+- Runtime: `Node`
+- Build Command: `npm ci --include=dev && npm run build -w server`
+- Start Command: `npm run start -w server`
+- Health Check Path: `/api/health`
+
+Variáveis mínimas:
+
+```ini
+NODE_ENV=production
+TRUST_PROXY=true
+FRONTEND_URL=https://lume-jade-two.vercel.app
+```
+
+Configure também uma opção TURN. Exemplo com API gerenciada:
+
+```ini
+ICE_API_URL=https://SEU_PROVEDOR/credentials?apiKey=SUA_CHAVE
+```
+
+Ou Cloudflare Realtime TURN:
+
+```ini
+CF_TURN_KEY_ID=...
+CF_TURN_API_TOKEN=...
+```
+
+Nunca coloque essas credenciais em arquivos versionados. Use apenas o painel de Environment Variables do Render.
+
+O arquivo `render.yaml` já contém os comandos corretos. Se o serviço atual é `https://lume-api-059u.onrender.com`, confirme depois do deploy:
+
+```text
+https://lume-api-059u.onrender.com/api/health
+```
+
+A resposta esperada é JSON com `"ok": true`.
+
+## Deploy do frontend na Vercel
+
+No projeto da Vercel:
+
+- Root Directory: `client`
+- Framework Preset: `Vite`
+- Build Command: `npm run build`
+- Output Directory: `dist`
+
+Variáveis do frontend:
+
+```ini
+VITE_DISCORD_CLIENT_ID=SEU_APPLICATION_ID
+VITE_PUBLIC_URL=https://lume-jade-two.vercel.app
+VITE_BACKEND_URL=https://lume-api-059u.onrender.com
+```
+
+`VITE_` significa que o valor entra no JavaScript público. Portanto, use esse prefixo apenas para IDs e URLs públicas. Nunca use `VITE_DISCORD_BOT_TOKEN`, `VITE_DISCORD_CLIENT_SECRET` ou qualquer chave TURN.
+
+Depois de alterar uma variável, faça um novo deploy completo na Vercel.
+
+## URL Mappings da Discord Activity
+
+No Discord Developer Portal, abra **Activities → URL Mappings** e configure nesta ordem:
+
+| Ordem | Prefix | Target |
+|---|---|---|
+| 1 | `/backend` | `lume-api-059u.onrender.com` |
+| 2 | `/` | `lume-jade-two.vercel.app` |
+
+Regras importantes:
+
+- o Target não leva `https://`;
+- `/backend` deve ficar antes de `/`, pois o Discord avalia os prefixos por ordem;
+- o cliente usa `/.proxy/backend/socket.io`; o Discord encaminha esse tráfego ao Socket.IO do Render;
+- em **Activities → Settings**, habilite Activities e marque Web, Desktop, iOS e Android em Supported Platforms;
+- não use Application URL Override no teste de produção.
+
+## Primary Entry Point para desktop e mobile
+
+Ao habilitar Activities, o Discord normalmente cria um comando `Launch`. Se o mobile disser que não existe comando para iniciar a Activity, execute o reparo incluído neste projeto.
+
+Abra um PowerShell local na raiz do projeto e defina os valores somente para essa sessão:
+
+```powershell
+$env:DISCORD_APPLICATION_ID="SEU_APPLICATION_ID"
+$env:DISCORD_BOT_TOKEN="SEU_BOT_TOKEN"
+npm run discord:register
+Remove-Item Env:DISCORD_BOT_TOKEN
+Remove-Item Env:DISCORD_APPLICATION_ID
+```
+
+O script consulta os comandos globais. Se já existir um `PRIMARY_ENTRY_POINT`, ele o atualiza; caso contrário, cria `iniciar` com:
+
+- `type: 4` (`PRIMARY_ENTRY_POINT`);
+- `handler: 2` (`DISCORD_LAUNCH_ACTIVITY`);
+- instalação em servidor e conta de usuário;
+- uso em servidor, DM e Group DM.
+
+O token do bot é necessário apenas para essa chamada administrativa e não deve ser salvo no frontend, no ZIP ou no GitHub. A propagação do comando global pode não ser instantânea.
+
+Documentação oficial: <https://docs.discord.com/developers/docs/interactions/slash-commands#entry-point-commands>.
+
+## Teste real no Discord
+
+O build e os testes automatizados não substituem o teste em clientes reais. Faça este roteiro após os dois deploys:
+
+1. Desktop/web: abra a Activity na chamada e confirme que não aparece erro de WebSocket.
+2. Clique em **Transmitir tela**, escolha a tela no navegador e inicie.
+3. Em outra conta na mesma chamada, confirme que `Tela 1` aparece sem colar link.
+4. Clique em **Assistir** e confirme que o player entra sem pedir apelido.
+5. Repita no Android ou iOS pelo App Launcher.
+6. Teste uma conta em 4G/5G; se ficar em “Sem rota de vídeo”, revise o TURN.
+7. Encerre a transmissão e confirme que ela desaparece da Activity.
+
+Só esse teste confirma o comportamento fim a fim do Discord, do navegador, do TURN e dos deploys públicos.
+
+## Solução de problemas
+
+### Activity conecta, mas não lista transmissões
+
+- confirme que `/backend` está antes de `/` nos URL Mappings;
+- confirme que o Target do backend não contém `https://`;
+- confirme `FRONTEND_URL` no Render;
+- abra `/api/health` do Render e verifique se o serviço não está hibernando;
+- no Discord desktop, ative Developer Mode e examine o Console.
+
+### Mobile diz que não há comando de entrada
+
+- execute `npm run discord:register` com as variáveis temporárias;
+- confirme que Activities e Android/iOS estão habilitados;
+- feche e abra o Discord depois da propagação do comando.
+
+### Render falha em `npm ci`
+
+Use esta versão com o `package-lock.json` incluído e execute o Build Command exatamente como documentado. Não use `npm ci` em um pacote sem lockfile.
+
+### Player fica em “Sem rota de vídeo”
+
+Socket.IO está funcionando, mas o WebRTC não encontrou rota entre os participantes. Configure TURN no Render. Vercel e Render não são servidores TURN.
+
+## Segurança e limites
+
+- o backend não recebe nem grava o vídeo; ele sinaliza as conexões WebRTC;
+- IDs de sala são aleatórios e somente o anfitrião possui o token de controle;
+- a lista da Activity fica em memória e é perdida quando o Render reinicia;
+- use uma única instância do backend; múltiplas instâncias exigem Redis/adapter do Socket.IO;
+- Render Free pode hibernar e tornar a primeira conexão lenta;
+- cada espectador consome upload adicional do anfitrião;
+- até quatro transmissões podem ser anunciadas por instância da Activity;
+- o `instanceId` organiza a sessão, mas não substitui OAuth2 para uma publicação pública em larga escala.
 
 ## Estrutura
 
-```
-lume/
-├─ server/src/      index.ts (HTTP + Socket.IO), rooms.ts, config.ts (ICE/TURN, .env)
-├─ client/src/
-│  ├─ lib/          host.ts (envio), viewer.ts (recepção), media.ts (captura/áudio), webrtc.ts, socket.ts
-│  ├─ pages/        HostPage.tsx (estúdio), WatchPage.tsx (player)
-│  └─ components/   Icons.tsx, Toasts.tsx
-├─ scripts/ + *.bat setup / start / tunnel para Windows
-├─ deploy/          docker-compose, Caddyfile
-└─ Dockerfile
+```text
+client/                 React + Vite + Discord Embedded App SDK
+  src/lib/socket.ts     Socket.IO direto ou via /.proxy/backend
+  src/pages/ActivityPage.tsx
+  src/pages/HostPage.tsx
+  src/pages/WatchPage.tsx
+server/                 Express + Socket.IO + salas em memória
+scripts/                registro do Entry Point e utilitários locais
+render.yaml             configuração do backend no Render
 ```

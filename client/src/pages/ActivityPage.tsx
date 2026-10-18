@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { io, type Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import { DiscordSDK } from '@discord/embedded-app-sdk';
+import { createSocket } from '../lib/socket';
 
 type Stream = { roomId: string; title: string };
 const clientId = import.meta.env.VITE_DISCORD_CLIENT_ID as string | undefined;
@@ -11,7 +12,6 @@ export default function ActivityPage() {
   const [connection, setConnection] = useState<Socket | null>(null);
   const [streams, setStreams] = useState<Stream[]>([]);
   const [error, setError] = useState('');
-  const [selected, setSelected] = useState<string | null>(null);
   const external = useMemo(() => (import.meta.env.VITE_PUBLIC_URL as string | undefined)?.replace(/\/$/, '') || location.origin, []);
 
   useEffect(() => {
@@ -25,7 +25,7 @@ export default function ActivityPage() {
 
   useEffect(() => {
     if (!instance) return;
-    const s = io(import.meta.env.VITE_BACKEND_URL || undefined, { transports: ['websocket'], reconnection: true });
+    const s = createSocket();
     setConnection(s);
     s.on('connect', () => s.emit('activity:join', instance, (r: { ok: boolean; streams?: Stream[] }) => {
       if (r.ok) setStreams(r.streams || []);
@@ -36,25 +36,41 @@ export default function ActivityPage() {
     return () => { s.disconnect(); setConnection(null); };
   }, [instance]);
 
+  async function openExternal(url: string) {
+    if (sdk) {
+      try {
+        await sdk.commands.openExternalLink({ url });
+        return;
+      } catch {
+        setError('O Discord não conseguiu abrir o navegador. Use o Discord atualizado e tente novamente.');
+      }
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
   function launchBroadcaster() {
     if (!instance) return;
-    const url = `${external}/?activity_instance=${encodeURIComponent(instance)}`;
-    if (sdk) sdk.commands.openExternalLink({ url }).catch(() => setError('Abra no navegador externo: ' + url));
-    else window.open(url, '_blank', 'noopener,noreferrer');
+    void openExternal(`${external}/?activity_instance=${encodeURIComponent(instance)}`);
+  }
+
+  function watch(roomId: string) {
+    void openExternal(`${external}/r/${encodeURIComponent(roomId)}?autojoin=1`);
   }
 
   return <main className="activity">
     <header><div><h1>LUME <span>ACTIVITY</span></h1><p>Transmissões disponíveis automaticamente nesta chamada.</p></div><button onClick={launchBroadcaster} disabled={!instance}>+ Transmitir tela</button></header>
     {error && <p className="activity-error" role="alert">{error}</p>}
     {!instance && !error && <p>Conectando ao Discord...</p>}
-    <section className={'activity-grid ' + (selected ? 'activity-focused' : '')}>
-      {streams.filter(s => !selected || selected === s.roomId).map(s => <article className="activity-tile" key={s.roomId}>
-        <div className="activity-tile-bar"><strong>{s.title}</strong><div><button onClick={() => setSelected(selected === s.roomId ? null : s.roomId)}>{selected === s.roomId ? 'Grade' : 'Ampliar'}</button></div></div>
-        <iframe title={s.title} src={'/r/' + encodeURIComponent(s.roomId)} allow="autoplay; fullscreen" allowFullScreen />
+    <section className="activity-grid">
+      {streams.map(s => <article className="activity-tile" key={s.roomId}>
+        <div className="activity-screen-icon" aria-hidden="true">▣</div>
+        <strong>{s.title}</strong>
+        <span>Ao vivo</span>
+        <button onClick={() => watch(s.roomId)}>Assistir</button>
       </article>)}
       {streams.length === 0 && <div className="activity-empty">Ninguém está transmitindo. Clique em “Transmitir tela”, selecione a tela na janela do navegador e inicie a transmissão. Ela aparecerá aqui automaticamente.</div>}
     </section>
-    <p className="activity-tip">Até quatro transmissões por chamada. Cada tela tem seus próprios controles de qualidade. A captura abre no navegador externo por restrições do Discord.</p>
+    <p className="activity-tip">Até quatro transmissões por chamada. Captura e reprodução abrem no navegador porque o proxy de Activities suporta WebSocket, mas não WebRTC.</p>
     {!connection && instance && <p className="activity-error">Aguardando conexão com servidor...</p>}
   </main>;
 }

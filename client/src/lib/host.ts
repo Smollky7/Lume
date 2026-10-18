@@ -79,15 +79,12 @@ export class HostBroadcaster {
       throw new Error(res.error === 'rate_limited' ? 'Muitas salas criadas. Aguarde um minuto.' : 'Falha ao criar a sala.');
     }
     this.roomId = res.roomId;
-    const instance = new URLSearchParams(location.search).get('activity_instance');
-    if (instance && !password) {
-      this.socket.emit('activity:publish', { instanceId: instance, roomId: res.roomId });
-    }
     this.hostToken = res.hostToken;
     this.iceServers = res.iceServers ?? [];
     this.hasTurn = !!res.turn;
     this.everConnected = true;
     this.bind();
+    await this.publishToActivity();
     this.statsTimer = window.setInterval(() => void this.pollStats(), 2000);
     this.h.onStatus('live');
     return this.roomId;
@@ -132,8 +129,7 @@ export class HostBroadcaster {
         return;
       }
       if (res.iceServers) this.iceServers = res.iceServers;
-      const instance = new URLSearchParams(location.search).get('activity_instance');
-      if (instance && this.roomId) this.socket.emit('activity:publish', { instanceId: instance, roomId: this.roomId });
+      await this.publishToActivity();
       this.h.onStatus('live');
       this.h.onNotify('success', 'Reconectado ao servidor');
       const alive = new Set((res.viewers ?? []).map((v) => v.id));
@@ -145,6 +141,28 @@ export class HostBroadcaster {
       this.emitViewers();
     } catch {
       this.h.onNotify('error', 'Falha ao retomar a sala.');
+    }
+  }
+
+  private async publishToActivity() {
+    const instance = new URLSearchParams(location.search).get('activity_instance');
+    if (!instance || this.password || !this.roomId) return;
+    try {
+      const res = await emitAck<{ ok: boolean; error?: string }>(
+        this.socket,
+        'activity:publish',
+        { instanceId: instance, roomId: this.roomId },
+      );
+      if (!res.ok) {
+        this.h.onNotify(
+          'warn',
+          res.error === 'activity_full'
+            ? 'A chamada já tem quatro transmissões.'
+            : 'A transmissão iniciou, mas não pôde ser anunciada na Activity.',
+        );
+      }
+    } catch {
+      this.h.onNotify('warn', 'A transmissão iniciou, mas o anúncio na Activity não recebeu resposta.');
     }
   }
 

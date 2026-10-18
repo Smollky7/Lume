@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon, Logo } from '../components/Icons';
 import { useToast } from '../components/Toasts';
+import { backendHttpUrl } from '../lib/socket';
 import type { QualityChoice } from '../lib/types';
 import { ViewerClient, type EndReason, type ViewerStats, type ViewerStatus } from '../lib/viewer';
 
@@ -26,10 +27,10 @@ const STATUS_TEXT: Record<ViewerStatus, string> = {
   ended: 'Encerrado',
 };
 
-export default function WatchPage({ roomId }: { roomId: string }) {
+export default function WatchPage({ roomId, autoJoin = false }: { roomId: string; autoJoin?: boolean }) {
   const toast = useToast();
   const [info, setInfo] = useState<{ exists: boolean; protected?: boolean } | null>(null);
-  const [name, setName] = useState(() => localStorage.getItem('lume:name') ?? '');
+  const [name, setName] = useState(() => autoJoin ? 'Convidado' : (localStorage.getItem('lume:name') ?? ''));
   const [password, setPassword] = useState('');
   const [joined, setJoined] = useState(false);
   const [status, setStatus] = useState<ViewerStatus>('connecting');
@@ -48,10 +49,11 @@ export default function WatchPage({ roomId }: { roomId: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<number>();
+  const autoJoined = useRef(false);
 
   useEffect(() => {
     let alive = true;
-    fetch(`${import.meta.env.VITE_BACKEND_URL || ''}/api/rooms/${encodeURIComponent(roomId)}`)
+    fetch(backendHttpUrl(`/api/rooms/${encodeURIComponent(roomId)}`))
       .then((r) => r.json())
       .then((j) => alive && setInfo(j))
       .catch(() => alive && setInfo({ exists: true }));
@@ -69,7 +71,7 @@ export default function WatchPage({ roomId }: { roomId: string }) {
   }, []);
 
   const join = useCallback(() => {
-    localStorage.setItem('lume:name', name);
+    if (!autoJoin) localStorage.setItem('lume:name', name);
     setFatal(null);
     const client = new ViewerClient(roomId, name.trim() || 'Convidado', password || undefined, {
       onStatus: setStatus,
@@ -92,7 +94,13 @@ export default function WatchPage({ roomId }: { roomId: string }) {
     clientRef.current = client;
     setJoined(true);
     client.connect();
-  }, [name, password, roomId, toast]);
+  }, [autoJoin, name, password, roomId, toast]);
+
+  useEffect(() => {
+    if (!autoJoin || autoJoined.current || info?.protected) return;
+    autoJoined.current = true;
+    join();
+  }, [autoJoin, info, join]);
 
   const bump = () => {
     setShowUi(true);
@@ -172,13 +180,13 @@ export default function WatchPage({ roomId }: { roomId: string }) {
 
       {showGate && !dead && (
         <div className="gate">
-          <h1>Entrar na transmissão</h1>
-          <p>Você vai assistir a tela compartilhada pelo anfitrião.</p>
+          <h1>{autoJoin ? 'Abrindo transmissão' : 'Entrar na transmissão'}</h1>
+          <p>{autoJoin ? 'Conectando automaticamente…' : 'Você vai assistir a tela compartilhada pelo anfitrião.'}</p>
           {fatal === 'bad_password' && <div className="alert alert-error">{FATAL.bad_password}</div>}
-          <div className="field">
+          {!autoJoin && <div className="field">
             <label htmlFor="nick">Seu apelido</label>
             <input id="nick" value={name} maxLength={24} onChange={(e) => setName(e.target.value)} placeholder="Convidado" />
-          </div>
+          </div>}
           {(info?.protected || fatal === 'bad_password') && (
             <div className="field">
               <label htmlFor="pw">
@@ -187,9 +195,9 @@ export default function WatchPage({ roomId }: { roomId: string }) {
               <input id="pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="off" />
             </div>
           )}
-          <button className="btn btn-primary btn-block btn-lg" onClick={join}>
+          {!autoJoin && <button className="btn btn-primary btn-block btn-lg" onClick={join}>
             <Icon name="play" size={16} /> Entrar e assistir
-          </button>
+          </button>}
         </div>
       )}
 

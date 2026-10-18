@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: lume-api
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build -w server
+    startCommand: npm run start -w server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "true"
+      - key: FRONTEND_URL
+        sync: false
+      - key: ICE_API_URL
+        sync: false

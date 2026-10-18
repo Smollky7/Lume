@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server, type Socket } from 'socket.io';
 import { HOST, HOST_GRACE_MS, MAX_VIEWERS, PORT, TRUST_PROXY, getIceServers, hasTurn } from './config.js';
 import { createRoom, rooms, sanitizeName, verifyHostToken, verifyPassword, type Room } from './rooms.js';
@@ -12,10 +12,21 @@ const clientDist = path.resolve(here, '../../client/dist');
 
 const app = express();
 app.disable('x-powered-by');
+
+const configuredOrigins = (process.env.FRONTEND_URL ?? '')
+  .split(',')
+  .map((value) => value.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+const isAllowedOrigin = (origin?: string): boolean =>
+  !origin ||
+  configuredOrigins.length === 0 ||
+  configuredOrigins.includes(origin.replace(/\/$/, '')) ||
+  /^https:\/\/\d+\.discordsays\.com$/i.test(origin);
+
 app.use((req, res, next) => {
-  const allowed = process.env.FRONTEND_URL?.replace(/\/$/, '');
-  if (allowed && req.headers.origin === allowed) {
-    res.setHeader('Access-Control-Allow-Origin', allowed);
+  const origin = req.headers.origin;
+  if (typeof origin === 'string' && isAllowedOrigin(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
   }
   next();
@@ -92,12 +103,15 @@ if (fs.existsSync(clientDist)) {
   );
 }
 
-const server = http.createServer(app);
-const io = new Server(server, {
+export const server = http.createServer(app);
+export const io = new Server(server, {
   maxHttpBufferSize: 1e5, // sinalização só carrega SDP/ICE
   pingInterval: 5000,
   pingTimeout: 8000,
-  cors: { origin: process.env.FRONTEND_URL ? [process.env.FRONTEND_URL.replace(/\/$/, '')] : true },
+  cors: {
+    origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
+    methods: ['GET', 'POST'],
+  },
 });
 
 type Ack = (res: Record<string, unknown>) => void;
@@ -125,6 +139,7 @@ io.on('connection', (socket) => {
     if (!id) return ack?.({ ok: false, error: 'invalid_instance' });
     if (activityId) socket.leave(`activity:${activityId}`);
     activityId = id;
+    if (!activityStreams.has(id)) activityStreams.set(id, []);
     socket.join(`activity:${id}`);
     ack?.({ ok: true, streams: activityList(id) });
   });
@@ -132,32 +147,16 @@ io.on('connection', (socket) => {
   socket.on('activity:publish', (payload: { instanceId?: string; roomId?: string } | undefined, ack?: Ack) => {
     const id = activityKey(payload?.instanceId);
     const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
-    if (!id || !room || room.passwordHash || room.hostSocketId !== socket.id) return ack?.({ ok: false, error: 'not_host' });
+    if (!id || !activityStreams.has(id) || !room || room.passwordHash || room.hostSocketId !== socket.id) {
+      return ack?.({ ok: false, error: 'not_host' });
+    }
     const list = activityList(id);
     if (!list.some(s => s.roomId === room.id) && list.length >= 4) return ack?.({ ok: false, error: 'activity_full' });
-    const next = [...list.filter(s => s.roomId !== room.id), { roomId: room.id, title: `Tela ${list.length + 1}` }];
+    const used = new Set(list.map((stream) => stream.title));
+    const title = [1, 2, 3, 4].map((n) => `Tela ${n}`).find((candidate) => !used.has(candidate)) ?? 'Tela';
+    const next = [...list.filter(s => s.roomId !== room.id), { roomId: room.id, title }];
     activityStreams.set(id, next);
     io.to(`activity:${id}`).emit('activity:streams', next);
-    ack?.({ ok: true });
-  });
-  socket.on('activity:add', (payload: { roomId?: string; title?: string } | undefined, ack?: Ack) => {
-    if (!activityId || !hit(`activity-edit:${socket.id}`, 20, 60_000)) return ack?.({ ok: false, error: 'rate_limited' });
-    const id = typeof payload?.roomId === 'string' ? payload.roomId.trim() : '';
-    const room = rooms.get(id);
-    if (!room || room.passwordHash) return ack?.({ ok: false, error: 'room_missing_or_protected' });
-    const list = activityList(activityId);
-    if (!list.some(s => s.roomId === id) && list.length >= 4) return ack?.({ ok: false, error: 'activity_full' });
-    const title = sanitizeName(payload?.title || 'Tela compartilhada');
-    const next = [...list.filter(s => s.roomId !== id), { roomId: id, title }];
-    activityStreams.set(activityId, next);
-    io.to(`activity:${activityId}`).emit('activity:streams', next);
-    ack?.({ ok: true });
-  });
-  socket.on('activity:remove', (roomId: unknown, ack?: Ack) => {
-    if (!activityId || typeof roomId !== 'string') return ack?.({ ok: false });
-    const next = activityList(activityId).filter(s => s.roomId !== roomId);
-    activityStreams.set(activityId, next);
-    io.to(`activity:${activityId}`).emit('activity:streams', next);
     ack?.({ ok: true });
   });
   let roomId: string | null = null;
@@ -269,13 +268,33 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, HOST, async () => {
+export async function startServer(options: { port?: number; host?: string; log?: boolean } = {}): Promise<void> {
+  const port = options.port ?? PORT;
+  const host = options.host ?? HOST;
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once('error', onError);
+    server.listen(port, host, () => {
+      server.off('error', onError);
+      resolve();
+    });
+  });
   const turn = hasTurn(await getIceServers());
-  console.log(`\n  Lume rodando em http://localhost:${PORT}`);
-  console.log(
-    turn
-      ? '  TURN: configurado (conexões atrás de NAT/CGNAT podem usar relay)'
-      : '  TURN: NÃO configurado — entre redes diferentes a conexão de vídeo pode travar em "estabelecendo conexão" (veja o README)',
-  );
-  console.log(`  Frontend compilado: ${fs.existsSync(clientDist) ? 'sim' : 'não (use npm run dev)'}\n`);
-});
+  if (options.log !== false) {
+    console.log(`\n  Lume rodando em http://localhost:${port}`);
+    console.log(
+      turn
+        ? '  TURN: configurado (conexões atrás de NAT/CGNAT podem usar relay)'
+        : '  TURN: NÃO configurado — entre redes diferentes a conexão de vídeo pode travar em "estabelecendo conexão" (veja o README)',
+    );
+    console.log(`  Frontend compilado: ${fs.existsSync(clientDist) ? 'sim' : 'não (use npm run dev)'}\n`);
+  }
+}
+
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isMain) {
+  startServer().catch((error) => {
+    console.error('Falha ao iniciar o Lume:', error);
+    process.exitCode = 1;
+  });
+}

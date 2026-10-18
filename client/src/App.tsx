@@ -4,6 +4,13 @@ import ActivityPage from './pages/ActivityPage';
 import WatchPage from './pages/WatchPage';
 
 export default function App() {
-  const m = location.pathname.match(/^\/r\/([\w-]+)/);
-  return <ToastProvider>{(location.pathname.startsWith('/activity') || new URLSearchParams(location.search).has('frame_id')) ? <ActivityPage /> : m ? <WatchPage roomId={m[1]} /> : <HostPage />}</ToastProvider>;
+  const path = location.pathname.replace(/^\/\.proxy/, '');
+  const query = new URLSearchParams(location.search);
+  const m = path.match(/^\/r\/([\w-]+)/);
+  const activity = path.startsWith('/activity') || query.has('frame_id');
+  return (
+    <ToastProvider>
+      {activity ? <ActivityPage /> : m ? <WatchPage roomId={m[1]} autoJoin={query.get('autojoin') === '1'} /> : <HostPage />}
+    </ToastProvider>
+  );
 }
