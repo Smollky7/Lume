@@ -1,0 +1,48 @@
+# Implantação em servidor próprio (VPS Linux com IP público).
+# 1) Aponte dois registros DNS para o IP do servidor: lume.SEUDOMINIO e turn.SEUDOMINIO
+# 2) Crie deploy/.env com: DOMAIN=lume.seudominio.com  TURN_DOMAIN=turn.seudominio.com  TURN_SECRET=<segredo longo>
+# 3) docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+# Portas a liberar: 80/tcp, 443/tcp, 3478/udp+tcp, 49152-49252/udp (relay TURN)
+
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    environment:
+      TRUST_PROXY: "true"
+      MAX_VIEWERS: "12"
+      TURN_URLS: "turn:${TURN_DOMAIN}:3478?transport=udp,turn:${TURN_DOMAIN}:3478?transport=tcp"
+      TURN_SECRET: "${TURN_SECRET}"
+    expose: ["3000"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: "${DOMAIN}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [app]
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - -n
+      - --realm=${TURN_DOMAIN}
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      - --fingerprint
+      - --no-multicast-peers
+      - --no-cli
+      - --min-port=49152
+      - --max-port=49252
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+
+volumes:
+  caddy_data:
