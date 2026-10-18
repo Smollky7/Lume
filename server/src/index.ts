@@ -11,6 +11,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const clientDist = path.resolve(here, '../../client/dist');
 
 const app = express();
+app.use((req, res, next) => {
+  const origin = process.env.FRONTEND_URL;
+
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+
+  next();
+});
 app.disable('x-powered-by');
 if (TRUST_PROXY) app.set('trust proxy', true);
 
@@ -86,6 +96,10 @@ if (fs.existsSync(clientDist)) {
 
 const server = http.createServer(app);
 const io = new Server(server, {
+    cors: {
+    origin: process.env.FRONTEND_URL,
+    methods: ['GET', 'POST'],
+  },
   maxHttpBufferSize: 1e5, // sinalização só carrega SDP/ICE
   pingInterval: 5000,
   pingTimeout: 8000,

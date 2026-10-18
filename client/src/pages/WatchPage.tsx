@@ -51,7 +51,7 @@ export default function WatchPage({ roomId }: { roomId: string }) {
 
   useEffect(() => {
     let alive = true;
-    fetch(`/api/rooms/${encodeURIComponent(roomId)}`)
+    fetch(`${import.meta.env.VITE_BACKEND_URL || ''}/api/rooms/${encodeURIComponent(roomId)}`)
       .then((r) => r.json())
       .then((j) => alive && setInfo(j))
       .catch(() => alive && setInfo({ exists: true }));
