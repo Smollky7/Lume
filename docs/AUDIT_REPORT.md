@@ -5,9 +5,9 @@ Escopo: cliente React/Vite, backend Node/Express/Socket.IO, WebRTC, Activity Dis
 
 ## 1. Resumo executivo
 
-Foram confirmados problemas de confiança no proxy, autorização de host após retomada, corridas no ciclo de vida de salas, validação insuficiente de sinalização, crescimento sem limites, hashing síncrono de senhas e políticas de origem incompletas. As correções foram implementadas e cobertas por integração. O repositório recebeu lint, documentação de operação/segurança e configuração reproduzível de container.
+As correções da primeira auditoria foram preservadas. Nesta segunda revisão, removi o override global incompatível de `minimatch`, acrescentei teste para impedir que um espectador execute ações de host, tornei explícito na UI que o lobby Activity não é privado e excluí `.git`, `node_modules`, builds e arquivos `.env` do contexto Docker.
 
-**Recomendação: NÃO APTO para publicação pública neste estado.** Permanecem um advisory alto no SDK Discord, ausência de prova server-side de participação em uma instância Activity, emails de autor não mascarados no histórico e falta de decisão/licença. Os pontos não foram ocultados nem “corrigidos” com uma alegação de segurança que o código não sustenta.
+**Parecer: APTO COM RESSALVAS para publicar o código-fonte no GitHub, não para declarar o lobby Activity privado nem para tratar o deploy de produção como aprovado.** O histórico não revelou segredo real; o advisory alto do SDK continua sem atualização compatível e há avisos moderados somente nas ferramentas de desenvolvimento. Veja a análise, condições e decisões pendentes em [docs/PUBLICATION_REVIEW.md](PUBLICATION_REVIEW.md).
 
 ## 2. Achados, severidade e evidências
 
@@ -28,9 +28,11 @@ Foram confirmados problemas de confiança no proxy, autorização de host após 
 
 ### Não resolvidos
 
-- **Alta — Zod vulnerável via `@discord/embedded-app-sdk`.** `npm audit` identifica o advisory `GHSA-mrhx-c7xc-m3w5` (DoS por coleções restritas grandes), sem correção disponível para a dependência declarada pelo SDK. A cópia de Zod é empacotada no SDK; não foi aplicado override de major sem compatibilidade. Há **dois registros altos** no relatório npm associados a essa cadeia.
-- **Alta para uso privado — identidade/membership da Discord Activity não é autenticada pelo servidor.** `instanceId` vem do cliente e serve apenas como chave de roteamento. O SDK possui comandos oficiais de autorização/autenticação e consulta de participantes, mas o backend não troca/valida OAuth2 nem recebe uma prova confiável de que o usuário pertence à instância indicada. Um ID conhecido permite consultar a lista; salas anunciadas sem senha são convites bearer. O código agora deixa explícito que `instanceId` não é autenticação, mas não inventa uma validação de membership que o servidor não consegue provar neste desenho.
-- **Média — dados de autor no histórico Git.** A checagem encontrou seis entradas de email de commit fora do formato noreply. Os valores não foram exibidos nem alterados. Endpoints públicos antigos também aparecem em commits históricos (`README.md`, `DEPLOY_ACTIVITY_AUTOMATICA.md`, `client/.env.example`). O working tree atual não contém esses endpoints. Histórico não foi reescrito, conforme solicitado.
+- **Alta — Zod via `@discord/embedded-app-sdk`.** O lock resolve `@discord/embedded-app-sdk@2.5.0` e `zod@3.25.76`; `npm audit` registra o mesmo advisory `GHSA-mrhx-c7xc-m3w5` duas vezes (nó Zod e SDK), não duas vulnerabilidades distintas. O primeiro patch upstream é Zod `4.6.6`, incompatível com o intervalo `^3.9.8` declarado pelo SDK; a versão estável mais recente do SDK e a beta consultada continuam declarando Zod 3. O Lume chama `ready()` e `openExternalLink()`, não chama `authorize`, `authenticate` nem `getInstanceConnectedParticipants`, e não assina atualização de participantes. O SDK contém esquema de participantes com array sem limite e o parser aceita eventos do bridge Discord; assim, o caminho não é exercido pelas operações solicitadas pelo Lume, mas o risco de DoS permanece no código de produção distribuído. Não foi aplicado override de major.
+- **Moderada — `minimatch` em ferramentas de desenvolvimento.** O lock usa `minimatch@10.2.6` em ESLint e TypeScript-ESLint; o advisory `GHSA-g3hv-75wg-m249` afeta versões `<11.0.1`. Os consumidores declaram faixas `^10.2.x`. O override anterior para `^11.0.8` violava essas faixas, apesar de a versão 11 ter engines compatíveis com o Node suportado e exports CommonJS/ESM. Foi removido; o audit continua mostrando avisos moderados de desenvolvimento. Não foi usado `npm audit fix --force`.
+- **Alta para privacidade de conteúdo da Activity — sem prova server-side de membership.** `instanceId` é fornecido pelo cliente e é somente uma chave de roteamento. Qualquer cliente que conheça o ID pode consultar a lista; qualquer host de sala aberta pode anunciar sob um ID válido, sem provar que participa da instância. O servidor restringe `room:state`, `room:end`, sinalização e publicação à sessão host da própria sala; espectadores não conseguem assumir esses papéis. A integração OAuth/membership não foi inventada nem implementada porque o backend não tem credencial/prova validável neste desenho. O lobby continua público e sujeito a anúncios não solicitados.
+- **Privacidade — metadados do histórico Git.** Há 3 refs locais e 8 commits; 6 commits usam um email de autor fora do padrão noreply, entre 2 endereços de autor únicos. Os valores não foram exibidos. URLs públicas antigas aparecem em `README.md`, `client/.env.example` e um guia de deploy removido. São endereços de serviços públicos, sem userinfo/credenciais; podem revelar metadados de implantação e devem ser confirmados pelo mantenedor. O histórico não foi reescrito.
+- **Segredos — Gitleaks.** A varredura de todas as refs com Gitleaks 8.28.0 encontrou três correspondências de formato: dois IDs Discord e uma ocorrência rotulada como client secret em `client/.env.example`, cuja variável é `VITE_DISCORD_CLIENT_ID`. IDs de aplicação são públicos; não foi identificado token, client secret, chave privada ou credencial real. O scanner heurístico adicional também não encontrou padrões de segredo. Isso não equivale a provar ausência de qualquer segredo possível.
 - **Média — licença não definida.** Não havia arquivo `LICENSE`; não foi escolhida uma licença em nome do responsável pelo projeto.
 - **Baixa/residual — acessibilidade não passou por avaliação manual ou axe/screen reader.** O lint e a revisão estática não identificaram um bloqueador confirmado, mas não substituem teste assistivo em navegador.
 
@@ -41,7 +43,8 @@ Uma busca por formatos comuns de tokens/chaves não encontrou correspondências 
 - `server/src/client-ip.ts` (novo), `server/src/config.ts`, `server/src/index.ts`, `server/src/rooms.ts`: IP/proxy, limites, autorização, concorrência, validação de sinalização, hashing assíncrono e erros.
 - `server/test/integration.test.mjs`: regressões de proxy, origem/headers, concorrência, senha, múltiplas transmissões/espectadores, sinalização, Activity e retomada.
 - `client/src/lib/host.ts`, `client/src/pages/ActivityPage.tsx`, `client/src/pages/HostPage.tsx`: token rotacionado, estado React e limite de senha no UI.
-- `package.json`, `package-lock.json`, `eslint.config.js` (novo): lint, dependências e override de `minimatch` para a versão corrigida. O `package-lock.json` já estava modificado antes desta auditoria; revisar esse diff separadamente antes de integrar.
+- `package.json`, `package-lock.json`, `eslint.config.js` (novo): lint e dependências. O override global de `minimatch` foi removido por incompatibilidade semver; o diff preexistente do lock foi preservado.
+- `.dockerignore` (novo): exclui metadados Git, dependências locais, builds e arquivos `.env` do contexto Docker.
 - `.env.example`, `render.yaml`, `deploy/docker-compose.yml`, `client/vercel.json`, `Dockerfile`: proxy, origens, headers e instalação reproduzível.
 - `README.md` e `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/DEPLOYMENT.md`, `docs/TESTING.md`, `docs/KNOWN_LIMITATIONS.md`: documentação substituída/criada.
 - `docs/AUDIT_REPORT.md`: este relatório.
@@ -54,22 +57,24 @@ Senhas usam `scrypt` assíncrono. A retomada gira o token e desconecta o socket 
 
 ## 5. Testes executados
 
-- `npm ci`: passou; instalação reproduzida pelo lockfile. O npm reportou duas vulnerabilidades altas do SDK/Zod.
+- `npm ci`: passou; instalação reproduzida pelo lockfile. O npm reportou 10 moderadas e 2 altas.
 - `npm run lint`: passou.
 - `npm run typecheck`: passou para backend e frontend.
-- `npm test`: passou, 3 testes de topo, 0 falhas. A integração inclui dois hosts, múltiplos espectadores, senha errada/correta, disputa concorrente de entrada, origem negada, headers, sinalização, publicação/remoção e retomada.
+- `npm test`: passou, 3 testes de topo, 0 falhas. A integração inclui dois hosts, múltiplos espectadores, senha errada/correta, disputa concorrente de entrada, origem negada, headers, sinalização, publicação/remoção, retomada, replay negado do token antigo e tentativa de ações privilegiadas por espectador.
 - `npm run build`: passou; Vite e TypeScript do backend.
-- `docker build --tag lume-audit:review .`: passou localmente; não foi publicado.
+- `docker build --tag lume-audit:publication-review .`: passou; o contexto foi reduzido de 164 MB para 17,3 kB após adicionar `.dockerignore`; imagem não publicada.
 - `docker compose -f deploy/docker-compose.yml config --quiet`: passou com valores fictícios de validação.
 - Parse de `client/vercel.json`: passou.
 - `git diff --check`: passou; erros do editor: nenhum.
-- `npm audit`: **não passa sem ressalvas**; mantém advisory alto upstream de Zod/SDK, sem fix disponível.
+- `npm audit`: **não passa sem ressalvas**; 2 registros altos do mesmo advisory de Zod/SDK e 10 registros moderados transitivos de `minimatch` no toolchain.
+- `npm audit --omit=dev`: mantém os 2 registros altos de Zod/SDK na dependência client-side de produção; não reporta os moderados de desenvolvimento.
+- Gitleaks 8.28.0 em todas as refs: 3 correspondências classificadas como IDs Discord públicos/placeholder de client ID; nenhum segredo real confirmado. Nenhum valor sensível foi impresso.
 
 Não foram executados: cliente Discord real, OAuth real, captura/reprodução em navegador, WebRTC P2P entre redes, TURN real, Vercel/Render ou qualquer deploy.
 
 ## 6. Problemas não resolvidos e motivos
 
-Zod depende de atualização/mitigação upstream compatível. Autenticação/membership Activity exige decidir e implementar um protocolo server-side verificável; identidade OAuth isolada não prova participação naquela instância. Emails/hostnames históricos não foram removidos porque não foi autorizada reescrita do histórico. A licença requer decisão do titular. Os limites de memória/rate limit são locais ao processo e não são distribuídos nem proteção DDoS.
+Zod e `minimatch` dependem de correção upstream compatível. Membership Activity requer uma prova validável pelo backend; o SDK no browser e um `instanceId` não bastam. Emails/hostnames históricos não foram removidos porque não foi autorizada reescrita do histórico. A licença requer decisão do titular. Os limites de memória/rate limit são locais ao processo e não são distribuídos nem proteção DDoS.
 
 ## 7. Riscos de regressão
 
@@ -79,25 +84,16 @@ Zod depende de atualização/mitigação upstream compatível. Autenticação/me
 - Rate limits e estado são por processo; múltiplas réplicas continuam não suportadas.
 - Clientes antigos em salas em memória podem perder estado durante um deploy/reinício; salas não são persistidas.
 
-## 8. Checklist de testes manuais
+## 8. Plano de testes pendentes
 
-- [ ] Abrir Activity no Discord desktop e verificar carregamento da lista e Socket.IO.
-- [ ] Iniciar duas transmissões sem senha na mesma Activity e confirmar títulos/remoção.
-- [ ] Abrir host e player no navegador externo, incluindo Android/iOS disponíveis.
-- [ ] Entrar em sala aberta e protegida; testar senha incorreta, correta e limite de espectadores.
-- [ ] Testar vídeo, áudio do sistema/microfone e controles em navegadores/sistemas suportados.
-- [ ] Testar pausa, encerramento pelo navegador, encerramento pelo host e reconexão dentro/fora de 30 segundos.
-- [ ] Confirmar que host substituído não consegue sinalizar, pausar ou encerrar.
-- [ ] Testar redes distintas com TURN e observar rota relay; repetir em rede móvel/CGNAT.
-- [ ] Verificar origens legítimas/ilegítimas, CSP, headers e URL Mappings Discord em produção.
-- [ ] Fazer avaliação de teclado, leitor de tela, foco, contraste e controles móveis.
+O plano reproduzível está em [docs/TESTING.md](TESTING.md) e cobre Activity real, dois usuários em redes diferentes, TURN, múltiplos transmissores, reconexão, encerramento inesperado, segurança de salas e deploy Render/Vercel ou Docker. Nenhum teste externo foi declarado aprovado.
 
 ## 9. Checklist de segurança para publicação pública
 
-- [ ] Resolver/mitigar o advisory Zod do SDK e repetir `npm audit`.
-- [ ] Definir modelo de autenticação Activity e verificar server-side qualquer acesso considerado privado.
-- [ ] Revisar emails de autor e URLs históricas; decidir conscientemente se histórico exige limpeza autorizada.
-- [ ] Escolher e adicionar licença apropriada antes de anunciar o projeto como open source.
+- [ ] Aceitar formalmente o risco residual do SDK ou aguardar versão estável compatível com Zod corrigido.
+- [ ] Tratar Activity como lobby público; antes de restringir publicação/consulta a membros, obter fluxo oficial server-side verificável e implementar testes.
+- [ ] Revisar em privado o email de autoria e a titularidade/estado dos endpoints históricos; não reescrever histórico sem autorização explícita.
+- [ ] Escolher licença antes de anunciar o projeto como open source; nenhuma licença foi adicionada.
 - [ ] Rodar Gitleaks ou ferramenta equivalente no working tree e em todo o histórico.
 - [ ] Configurar `FRONTEND_URL`, `TRUST_PROXY_HOPS`, limites, CSP e backend TURN no provedor real.
 - [ ] Confirmar que nenhuma chave/bot token/TURN secret foi colocada em `VITE_*` ou commitada.
@@ -107,4 +103,4 @@ Zod depende de atualização/mitigação upstream compatível. Autenticação/me
 
 ## 10. Recomendação
 
-**NÃO APTO para publicação pública neste momento.** A recomendação muda após resolução ou aceitação formal do advisory alto, decisão explícita sobre a visibilidade/autorizações do lobby Activity, revisão de emails históricos, escolha de licença e execução dos testes reais de plataforma. Os checks locais e o build Docker são satisfatórios, mas não compensam esses riscos e não constituem validação de deploy.
+**APTO COM RESSALVAS para tornar o código-fonte visível no GitHub**, condicionado à aceitação do advisory de produção e à revisão de privacidade dos metadados históricos. Isso não é aprovação para anunciar o projeto como open source (licença ainda ausente), usar a Activity como espaço privado ou afirmar que Discord/TURN/deploy foram validados. O parecer detalhado e as decisões que dependem do mantenedor estão em [docs/PUBLICATION_REVIEW.md](PUBLICATION_REVIEW.md).

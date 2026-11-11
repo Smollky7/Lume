@@ -62,7 +62,7 @@ export default function ActivityPage() {
   }
 
   return <main className="activity">
-    <header><div><h1>LUME <span>ACTIVITY</span></h1><p>Transmissões disponíveis automaticamente nesta chamada.</p></div><button onClick={launchBroadcaster} disabled={!instance}>+ Transmitir tela</button></header>
+    <header><div><h1>LUME <span>ACTIVITY</span></h1><p>Lista pública por ID da instância; não confirma participação na chamada.</p></div><button onClick={launchBroadcaster} disabled={!instance}>+ Transmitir tela</button></header>
     {(error || !clientId) && <p className="activity-error" role="alert">{error || 'VITE_DISCORD_CLIENT_ID não configurado na Vercel.'}</p>}
     {!instance && !error && clientId && <p>Conectando ao Discord...</p>}
     <section className="activity-grid">
@@ -74,7 +74,7 @@ export default function ActivityPage() {
       </article>)}
       {streams.length === 0 && <div className="activity-empty">Ninguém está transmitindo. Clique em “Transmitir tela”, selecione a tela na janela do navegador e inicie a transmissão. Ela aparecerá aqui automaticamente.</div>}
     </section>
-    <p className="activity-tip">Até quatro transmissões por chamada. Captura e reprodução abrem no navegador porque o proxy de Activities suporta WebSocket, mas não WebRTC.</p>
+    <p className="activity-tip">Até quatro transmissões sem senha por instância. A lista não é privada; captura e reprodução abrem no navegador porque o proxy de Activities suporta WebSocket, mas não WebRTC.</p>
     {!connected && instance && <p className="activity-error">Aguardando conexão com servidor...</p>}
   </main>;
 }

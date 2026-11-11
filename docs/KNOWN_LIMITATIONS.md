@@ -6,7 +6,7 @@
 - WebRTC P2P envia uma cópia por espectador; o upload e o custo de CPU do host crescem com cada peer.
 - STUN não garante conectividade atrás de NAT/CGNAT. TURN é necessário em algumas redes e pode gerar custo de tráfego.
 - Salas, lista Activity e rate limits ficam em memória e são perdidos ao reiniciar. Só há suporte operacional para uma instância.
-- O `instanceId` da Activity é uma chave de agrupamento, não prova de participação nem identidade Discord. A lista não é um canal privado.
+- O `instanceId` da Activity é uma chave de agrupamento, não prova de participação nem identidade Discord. Qualquer cliente que conheça o ID pode consultar a lista; qualquer host de sala aberta pode anunciar sob esse ID. A lista não é privada nem isolada por chamada.
 - IDs de sala e senhas opcionais não implementam conta, lista de permissões ou revogação por usuário. Compartilhe links somente com quem deve assistir.
 - O SDK Discord possui advisory upstream para Zod empacotado sem correção compatível disponível na auditoria atual.
 - Esta entrega não foi testada em clientes Discord reais, redes TURN reais ou deploys públicos.

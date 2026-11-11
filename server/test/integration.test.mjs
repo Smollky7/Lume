@@ -128,6 +128,16 @@ test('sala é publicada automaticamente na Activity e aceita sinalização', asy
   assert.equal((await emitAck(passwordViewer, 'room:join', { roomId: protectedRoom.roomId, password: 'wrong' })).error, 'bad_password');
   assert.equal((await emitAck(passwordViewer, 'room:join', { roomId: protectedRoom.roomId, password: 'test-password' })).ok, true);
 
+  let viewerReceivedStateChange = false;
+  viewer.on('room:state', () => { viewerReceivedStateChange = true; });
+  viewer.emit('room:state', { state: 'paused' });
+  viewer.emit('room:end');
+  assert.equal((await emitAck(viewer, 'activity:publish', { instanceId, roomId: room.roomId })).error, 'not_host');
+  assert.equal((await emitAck(viewer, 'room:create', {})).error, 'already_in_room');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(viewerReceivedStateChange, false);
+  assert.equal((await fetch(`${url}/api/rooms/${room.roomId}`).then((r) => r.json())).exists, true);
+
   let signalCount = 0;
   viewer.on('signal', () => signalCount++);
   const relayed = new Promise((resolve) => viewer.once('signal', resolve));
@@ -142,6 +152,9 @@ test('sala é publicada automaticamente na Activity e aceita sinalização', asy
   const resumed = await emitAck(replacementHost, 'room:resume', { roomId: room.roomId, hostToken: room.hostToken });
   assert.equal(resumed.ok, true);
   assert.notEqual(resumed.hostToken, room.hostToken);
+  const staleHost = await connect(url);
+  clients.push(staleHost);
+  assert.equal((await emitAck(staleHost, 'room:resume', { roomId: room.roomId, hostToken: room.hostToken })).error, 'not_found');
   host.emit('room:end');
   assert.equal((await fetch(`${url}/api/rooms/${room.roomId}`).then((r) => r.json())).exists, true);
 
