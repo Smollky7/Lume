@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
+
+const scrypt = promisify(crypto.scrypt);
 
 export interface Viewer {
   id: string;
@@ -19,13 +22,13 @@ export interface Room {
 
 export const rooms = new Map<string, Room>();
 
-export function hashPassword(password: string, salt: Buffer): Buffer {
-  return crypto.scryptSync(password, salt, 32);
+export async function hashPassword(password: string, salt: Buffer): Promise<Buffer> {
+  return (await scrypt(password, salt, 32)) as Buffer;
 }
 
-export function createRoom(hostSocketId: string, password?: string): Room {
-  let id = crypto.randomBytes(9).toString('base64url'); // 72 bits de entropia
-  while (rooms.has(id)) id = crypto.randomBytes(9).toString('base64url');
+export async function createRoom(hostSocketId: string, password?: string): Promise<Room> {
+  let id = crypto.randomBytes(16).toString('base64url');
+  while (rooms.has(id)) id = crypto.randomBytes(16).toString('base64url');
   const room: Room = {
     id,
     hostSocketId,
@@ -36,23 +39,28 @@ export function createRoom(hostSocketId: string, password?: string): Room {
     state: 'live',
     createdAt: Date.now(),
   };
+  rooms.set(id, room);
   if (password) {
     room.passwordSalt = crypto.randomBytes(16);
-    room.passwordHash = hashPassword(password, room.passwordSalt);
+    try {
+      room.passwordHash = await hashPassword(password, room.passwordSalt);
+    } catch (error) {
+      rooms.delete(id);
+      throw error;
+    }
   }
-  rooms.set(id, room);
   return room;
 }
 
-export function verifyPassword(room: Room, password?: string): boolean {
+export async function verifyPassword(room: Room, password?: string): Promise<boolean> {
   if (!room.passwordHash || !room.passwordSalt) return true;
   if (typeof password !== 'string') return false;
-  const candidate = hashPassword(password, room.passwordSalt);
+  const candidate = await hashPassword(password, room.passwordSalt);
   return crypto.timingSafeEqual(candidate, room.passwordHash);
 }
 
 export function verifyHostToken(room: Room, token: unknown): boolean {
-  if (typeof token !== 'string') return false;
+  if (typeof token !== 'string' || token.length !== 32) return false;
   const a = Buffer.from(token);
   const b = Buffer.from(room.hostToken);
   return a.length === b.length && crypto.timingSafeEqual(a, b);

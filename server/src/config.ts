@@ -17,8 +17,17 @@ if (fs.existsSync(envFile)) {
 
 export const PORT = Number(process.env.PORT ?? 3000);
 export const HOST = process.env.HOST ?? '0.0.0.0';
-export const MAX_VIEWERS = Number(process.env.MAX_VIEWERS ?? 8);
-export const TRUST_PROXY = (process.env.TRUST_PROXY ?? 'false') === 'true';
+function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+export const MAX_VIEWERS = boundedInteger(process.env.MAX_VIEWERS, 8, 1, 32);
+export const MAX_ROOMS = boundedInteger(process.env.MAX_ROOMS, 500, 1, 10_000);
+export const MAX_CONNECTIONS = boundedInteger(process.env.MAX_CONNECTIONS, 2_000, 1, 20_000);
+export const MAX_ACTIVITY_SESSIONS = boundedInteger(process.env.MAX_ACTIVITY_SESSIONS, 5_000, 1, 20_000);
+const proxyHops = process.env.TRUST_PROXY_HOPS ?? (process.env.TRUST_PROXY === 'true' ? '1' : process.env.TRUST_PROXY ?? '0');
+export const TRUST_PROXY_HOPS = /^\d+$/.test(proxyHops) && Number(proxyHops) <= 10 ? Number(proxyHops) : 0;
 export const HOST_GRACE_MS = 30_000;
 
 export interface IceServer {

@@ -111,6 +111,7 @@ export class HostBroadcaster {
       this.h.onStatus('reconnecting');
       this.h.onNotify('warn', 'Conexão com o servidor perdida. Reconectando…');
     });
+    s.on('room:replaced', () => this.finish('A sala foi retomada por outra conexão.'));
     s.on('connect', () => {
       if (!this.everConnected || this.ended || !this.roomId) return;
       void this.resume();
@@ -119,7 +120,7 @@ export class HostBroadcaster {
 
   private async resume() {
     try {
-      const res = await emitAck<{ ok: boolean; viewers?: { id: string; name: string }[]; iceServers?: IceServerCfg[] }>(
+      const res = await emitAck<{ ok: boolean; hostToken?: string; viewers?: { id: string; name: string }[]; iceServers?: IceServerCfg[] }>(
         this.socket,
         'room:resume',
         { roomId: this.roomId, hostToken: this.hostToken },
@@ -128,6 +129,7 @@ export class HostBroadcaster {
         this.finish('A sala não existe mais no servidor.');
         return;
       }
+      if (res.hostToken) this.hostToken = res.hostToken;
       if (res.iceServers) this.iceServers = res.iceServers;
       await this.publishToActivity();
       this.h.onStatus('live');

@@ -9,8 +9,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: TRUST_PROXY
-        value: "true"
+      - key: TRUST_PROXY_HOPS
+        value: "1"
       - key: FRONTEND_URL
         sync: false
       - key: ICE_API_URL

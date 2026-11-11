@@ -1,10 +1,12 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Server, type Socket } from 'socket.io';
-import { HOST, HOST_GRACE_MS, MAX_VIEWERS, PORT, TRUST_PROXY, getIceServers, hasTurn } from './config.js';
+import { HOST, HOST_GRACE_MS, MAX_ACTIVITY_SESSIONS, MAX_CONNECTIONS, MAX_ROOMS, MAX_VIEWERS, PORT, TRUST_PROXY_HOPS, getIceServers, hasTurn } from './config.js';
+import { clientIpFromHeaders } from './client-ip.js';
 import { createRoom, rooms, sanitizeName, verifyHostToken, verifyPassword, type Room } from './rooms.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -19,9 +21,9 @@ const configuredOrigins = (process.env.FRONTEND_URL ?? '')
   .filter(Boolean);
 const isAllowedOrigin = (origin?: string): boolean =>
   !origin ||
-  configuredOrigins.length === 0 ||
   configuredOrigins.includes(origin.replace(/\/$/, '')) ||
-  /^https:\/\/\d+\.discordsays\.com$/i.test(origin);
+  /^https:\/\/(?:\d+\.)?discordsays\.com$/i.test(origin) ||
+  (process.env.NODE_ENV !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin));
 
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -31,7 +33,7 @@ app.use((req, res, next) => {
   }
   next();
 });
-if (TRUST_PROXY) app.set('trust proxy', true);
+app.set('trust proxy', TRUST_PROXY_HOPS);
 
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -49,10 +51,15 @@ app.use((_req, res, next) => {
 
 // --- Limite simples de tentativas por IP (força bruta de senha / criação de salas) ---
 const buckets = new Map<string, { count: number; reset: number }>();
+const MAX_RATE_BUCKETS = 20_000;
 function hit(key: string, max: number, windowMs: number): boolean {
   const now = Date.now();
   const b = buckets.get(key);
   if (!b || b.reset < now) {
+    if (buckets.size >= MAX_RATE_BUCKETS) {
+      for (const [bucketKey, bucket] of buckets) if (bucket.reset < now) buckets.delete(bucketKey);
+      if (buckets.size >= MAX_RATE_BUCKETS) return false;
+    }
     buckets.set(key, { count: 1, reset: now + windowMs });
     return true;
   }
@@ -65,18 +72,15 @@ setInterval(() => {
 }, 60_000).unref();
 
 function clientIp(socket: Socket): string {
-  if (TRUST_PROXY) {
-    const h = socket.handshake.headers;
-    const cf = h['cf-connecting-ip'];
-    if (typeof cf === 'string') return cf;
-    const xff = h['x-forwarded-for'];
-    if (typeof xff === 'string') return xff.split(',')[0].trim();
-  }
-  return socket.handshake.address;
+  const forwardedFor = socket.handshake.headers['x-forwarded-for'];
+  return clientIpFromHeaders(
+    socket.request.socket.remoteAddress ?? socket.handshake.address,
+    typeof forwardedFor === 'string' ? forwardedFor : undefined,
+    TRUST_PROXY_HOPS,
+  );
 }
 
-// Activity lobby: up to four independent existing host rooms per Discord instance.
-// This is ephemeral shared state, not Discord authentication. Use only trusted calls.
+// Activity IDs route lobby updates; they are client-provided and are not authentication.
 type ActivityStream = { roomId: string; title: string };
 const activityStreams = new Map<string, ActivityStream[]>();
 const activityKey = (raw: unknown): string | null =>
@@ -114,6 +118,13 @@ export const io = new Server(server, {
   },
 });
 
+io.use((socket, next) => {
+  const origin = socket.handshake.headers.origin;
+  if (typeof origin === 'string' && !isAllowedOrigin(origin)) return next(new Error('origin_not_allowed'));
+  if (io.engine.clientsCount >= MAX_CONNECTIONS) return next(new Error('server_full'));
+  next();
+});
+
 type Ack = (res: Record<string, unknown>) => void;
 
 function endRoom(room: Room, reason: string) {
@@ -124,7 +135,8 @@ function endRoom(room: Room, reason: string) {
   for (const [id, streams] of activityStreams) {
     if (streams.some(s => s.roomId === room.id)) {
       const next = streams.filter(s => s.roomId !== room.id);
-      activityStreams.set(id, next);
+      if (next.length) activityStreams.set(id, next);
+      else activityStreams.delete(id);
       io.to(`activity:${id}`).emit('activity:streams', next);
     }
   }
@@ -137,9 +149,9 @@ io.on('connection', (socket) => {
   socket.on('activity:join', (raw: unknown, ack?: Ack) => {
     const id = activityKey(raw);
     if (!id) return ack?.({ ok: false, error: 'invalid_instance' });
+    if (!hit(`activity-join:${ip}`, 120, 60_000)) return ack?.({ ok: false, error: 'rate_limited' });
     if (activityId) socket.leave(`activity:${activityId}`);
     activityId = id;
-    if (!activityStreams.has(id)) activityStreams.set(id, []);
     socket.join(`activity:${id}`);
     ack?.({ ok: true, streams: activityList(id) });
   });
@@ -147,9 +159,11 @@ io.on('connection', (socket) => {
   socket.on('activity:publish', (payload: { instanceId?: string; roomId?: string } | undefined, ack?: Ack) => {
     const id = activityKey(payload?.instanceId);
     const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
-    if (!id || !activityStreams.has(id) || !room || room.passwordHash || room.hostSocketId !== socket.id) {
+    if (!id || !room || room.passwordHash || room.hostSocketId !== socket.id) {
       return ack?.({ ok: false, error: 'not_host' });
     }
+    if (!hit(`activity-publish:${ip}`, 20, 60_000)) return ack?.({ ok: false, error: 'rate_limited' });
+    if (!activityStreams.has(id) && activityStreams.size >= MAX_ACTIVITY_SESSIONS) return ack?.({ ok: false, error: 'server_full' });
     const list = activityList(id);
     if (!list.some(s => s.roomId === room.id) && list.length >= 4) return ack?.({ ok: false, error: 'activity_full' });
     const used = new Set(list.map((stream) => stream.title));
@@ -161,83 +175,135 @@ io.on('connection', (socket) => {
   });
   let roomId: string | null = null;
   let role: 'host' | 'viewer' | null = null;
+  let roomPending = false;
   const ip = clientIp(socket);
 
   const currentRoom = () => (roomId ? rooms.get(roomId) : undefined);
 
   socket.on('room:create', async (payload: { password?: string } | undefined, ack?: Ack) => {
     if (typeof ack !== 'function') return;
+    if (roomId || role || roomPending) return ack({ ok: false, error: 'already_in_room' });
     if (!hit(`create:${ip}`, 10, 60_000)) return ack({ ok: false, error: 'rate_limited' });
-    const password = typeof payload?.password === 'string' && payload.password ? payload.password.slice(0, 128) : undefined;
-    const iceServers = await getIceServers();
-    const room = createRoom(socket.id, password);
-    roomId = room.id;
-    role = 'host';
-    socket.join(room.id);
-    ack({ ok: true, roomId: room.id, hostToken: room.hostToken, iceServers, turn: hasTurn(iceServers) });
+    if (typeof payload?.password === 'string' && payload.password.length > 128) return ack({ ok: false, error: 'invalid_password' });
+    if (rooms.size >= MAX_ROOMS) return ack({ ok: false, error: 'server_full' });
+    roomPending = true;
+    try {
+      const iceServers = await getIceServers();
+      if (!socket.connected) return;
+      if (rooms.size >= MAX_ROOMS) return ack({ ok: false, error: 'server_full' });
+      const password = typeof payload?.password === 'string' && payload.password ? payload.password : undefined;
+      const room = await createRoom(socket.id, password);
+      if (!socket.connected) {
+        rooms.delete(room.id);
+        return;
+      }
+      roomId = room.id;
+      role = 'host';
+      socket.join(room.id);
+      ack({ ok: true, roomId: room.id, hostToken: room.hostToken, iceServers, turn: hasTurn(iceServers) });
+    } catch (error) {
+      console.error('[room:create] falha ao criar sala:', error);
+      if (socket.connected) ack({ ok: false, error: 'internal_error' });
+    } finally {
+      roomPending = false;
+    }
   });
 
   socket.on('room:resume', async (payload: { roomId?: string; hostToken?: string } | undefined, ack?: Ack) => {
     if (typeof ack !== 'function') return;
+    if (roomId || role || roomPending) return ack({ ok: false, error: 'already_in_room' });
     const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
     if (!room || !verifyHostToken(room, payload?.hostToken)) return ack({ ok: false, error: 'not_found' });
+    roomPending = true;
     if (room.graceTimer) clearTimeout(room.graceTimer);
     room.graceTimer = undefined;
+    const previousHostId = room.hostSocketId;
     room.hostSocketId = socket.id;
+    room.hostToken = crypto.randomBytes(24).toString('base64url');
     roomId = room.id;
     role = 'host';
     socket.join(room.id);
+    if (previousHostId && previousHostId !== socket.id) {
+      const previousHost = io.sockets.sockets.get(previousHostId);
+      previousHost?.emit('room:replaced');
+      previousHost?.disconnect(true);
+    }
     io.to(room.id).emit('room:host-online');
-    ack({ ok: true, viewers: [...room.viewers.values()], iceServers: await getIceServers() });
+    try {
+      let iceServers: Awaited<ReturnType<typeof getIceServers>> = [];
+      try {
+        iceServers = await getIceServers();
+      } catch (error) {
+        console.error('[room:resume] falha ao obter ICE servers:', error);
+      }
+      ack({ ok: true, hostToken: room.hostToken, viewers: [...room.viewers.values()], iceServers });
+    } catch (error) {
+      console.error('[room:resume] falha ao retomar sala:', error);
+      if (socket.connected) ack({ ok: false, error: 'internal_error' });
+    } finally {
+      roomPending = false;
+    }
   });
 
   socket.on(
     'room:join',
     async (payload: { roomId?: string; password?: string; name?: string } | undefined, ack?: Ack) => {
       if (typeof ack !== 'function') return;
+      if (roomId || role || roomPending) return ack({ ok: false, error: 'already_in_room' });
       const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
       if (!room) return ack({ ok: false, error: 'not_found' });
-      if (room.passwordHash && !hit(`pw:${ip}`, 8, 60_000)) return ack({ ok: false, error: 'rate_limited' });
-      if (!verifyPassword(room, payload?.password)) return ack({ ok: false, error: 'bad_password' });
-      if (!room.viewers.has(socket.id) && room.viewers.size >= MAX_VIEWERS) return ack({ ok: false, error: 'room_full' });
+      roomPending = true;
+      try {
+        if (room.passwordHash && !hit(`pw:${ip}`, 8, 60_000)) return ack({ ok: false, error: 'rate_limited' });
+        if (typeof payload?.password === 'string' && payload.password.length > 128) return ack({ ok: false, error: 'bad_password' });
+        if (!(await verifyPassword(room, payload?.password))) return ack({ ok: false, error: 'bad_password' });
+        if (!room.viewers.has(socket.id) && room.viewers.size >= MAX_VIEWERS) return ack({ ok: false, error: 'room_full' });
 
-      const iceServers = await getIceServers();
-      if (!rooms.has(room.id)) return ack({ ok: false, error: 'not_found' });
-      const viewer = { id: socket.id, name: sanitizeName(payload?.name) };
-      room.viewers.set(socket.id, viewer);
-      roomId = room.id;
-      role = 'viewer';
-      socket.join(room.id);
-      ack({
-        ok: true,
-        viewerId: socket.id,
-        iceServers,
-        state: room.state,
-        hostOnline: !!room.hostSocketId,
-        count: room.viewers.size,
-      });
-      if (room.hostSocketId) io.to(room.hostSocketId).emit('viewer:joined', viewer);
-      socket.to(room.id).emit('peer:joined', { name: viewer.name });
-      emitViewers(room);
+        const iceServers = await getIceServers();
+        if (!socket.connected) return;
+        if (!rooms.has(room.id)) return ack({ ok: false, error: 'not_found' });
+        if (room.viewers.size >= MAX_VIEWERS) return ack({ ok: false, error: 'room_full' });
+        const viewer = { id: socket.id, name: sanitizeName(payload?.name) };
+        room.viewers.set(socket.id, viewer);
+        roomId = room.id;
+        role = 'viewer';
+        socket.join(room.id);
+        ack({
+          ok: true,
+          viewerId: socket.id,
+          iceServers,
+          state: room.state,
+          hostOnline: !!room.hostSocketId,
+          count: room.viewers.size,
+        });
+        if (room.hostSocketId) io.to(room.hostSocketId).emit('viewer:joined', viewer);
+        socket.to(room.id).emit('peer:joined', { name: viewer.name });
+        emitViewers(room);
+      } catch (error) {
+        console.error('[room:join] falha ao entrar na sala:', error);
+        if (socket.connected) ack({ ok: false, error: 'internal_error' });
+      } finally {
+        roomPending = false;
+      }
     },
   );
 
   // Sinalização WebRTC: o anfitrião sempre faz a oferta; espectadores respondem.
   socket.on('signal:to-viewer', (msg: { to?: string; data?: unknown } | undefined) => {
     const room = currentRoom();
-    if (!room || role !== 'host' || typeof msg?.to !== 'string' || !room.viewers.has(msg.to)) return;
+    if (!room || role !== 'host' || room.hostSocketId !== socket.id || typeof msg?.to !== 'string' || !room.viewers.has(msg.to) || !isSignal(msg.data, ['offer', 'candidate'])) return;
     io.to(msg.to).emit('signal', { from: socket.id, data: msg.data });
   });
 
   socket.on('signal:to-host', (msg: { data?: unknown } | undefined) => {
     const room = currentRoom();
-    if (!room || role !== 'viewer' || !room.hostSocketId) return;
+    if (!room || role !== 'viewer' || !room.viewers.has(socket.id) || !room.hostSocketId || !isSignal(msg?.data, ['answer', 'candidate', 'request-offer'])) return;
     io.to(room.hostSocketId).emit('signal', { from: socket.id, data: msg?.data });
   });
 
   socket.on('room:state', (msg: { state?: string } | undefined) => {
     const room = currentRoom();
-    if (!room || role !== 'host') return;
+    if (!room || role !== 'host' || room.hostSocketId !== socket.id) return;
     if (msg?.state !== 'live' && msg?.state !== 'paused') return;
     room.state = msg.state;
     io.to(room.id).emit('room:state', { state: room.state });
@@ -245,7 +311,7 @@ io.on('connection', (socket) => {
 
   socket.on('room:end', () => {
     const room = currentRoom();
-    if (!room || role !== 'host') return;
+    if (!room || role !== 'host' || room.hostSocketId !== socket.id) return;
     endRoom(room, 'host_ended');
   });
 
@@ -267,6 +333,22 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+function isSignal(value: unknown, allowedTypes: string[]): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const signal = value as Record<string, unknown>;
+  if (signal.type === 'request-offer') return allowedTypes.includes('request-offer') && Object.keys(signal).length === 1;
+  if (signal.type === 'offer' || signal.type === 'answer') {
+    return allowedTypes.includes(signal.type) && typeof signal.sdp === 'string' && signal.sdp.length > 0 && signal.sdp.length <= 64_000;
+  }
+  if (signal.type === 'candidate' && allowedTypes.includes('candidate')) {
+    const candidate = signal.candidate;
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+    const candidateText = (candidate as Record<string, unknown>).candidate;
+    return typeof candidateText === 'string' && candidateText.length <= 4096;
+  }
+  return false;
+}
 
 export async function startServer(options: { port?: number; host?: string; log?: boolean } = {}): Promise<void> {
   const port = options.port ?? PORT;

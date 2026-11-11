@@ -9,7 +9,8 @@ services:
     build: ..
     restart: unless-stopped
     environment:
-      TRUST_PROXY: "true"
+      FRONTEND_URL: "https://${DOMAIN}"
+      TRUST_PROXY_HOPS: "1"
       MAX_VIEWERS: "12"
       TURN_URLS: "turn:${TURN_DOMAIN}:3478?transport=udp,turn:${TURN_DOMAIN}:3478?transport=tcp"
       TURN_SECRET: "${TURN_SECRET}"

@@ -2,6 +2,7 @@
   "name": "lume",
   "version": "0.2.0",
   "private": true,
+  "type": "module",
   "description": "Transmissão de tela em tempo real via WebRTC, direto do navegador.",
   "workspaces": [
     "server",
@@ -13,12 +14,21 @@
   "scripts": {
     "dev": "concurrently -k -n server,client -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w client\"",
     "build": "npm run build -w client && npm run build -w server",
+    "lint": "eslint .",
     "start": "node server/dist/index.js",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
     "test": "node --test server/test/*.test.mjs",
     "discord:register": "node scripts/register-discord-command.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.0.0"
+    "@eslint/js": "^10.0.1",
+    "concurrently": "^9.0.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.14.0",
+    "typescript-eslint": "^8.72.2"
+  },
+  "overrides": {
+    "minimatch": "^11.0.8"
   }
 }

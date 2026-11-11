@@ -46,6 +46,7 @@ export default function HostPage() {
   const [copied, setCopied] = useState(false);
   const [joinInput, setJoinInput] = useState('');
   const [publicBase, setPublicBase] = useState(() => localStorage.getItem('lume:publicBase') ?? '');
+  const [now, setNow] = useState(0);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const mixerRef = useRef<AudioMixer | null>(null);
@@ -57,6 +58,11 @@ export default function HostPage() {
   }, [stream, phase]);
 
   useEffect(() => saveSettings(settings), [settings]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Fecha tudo se a aba do anfitrião for fechada.
   useEffect(() => {
@@ -359,7 +365,7 @@ export default function HostPage() {
                 <label htmlFor="pw">
                   <Icon name="lock" size={14} /> Senha (opcional)
                 </label>
-                <input id="pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Sem senha" autoComplete="off" />
+                <input id="pw" type="password" value={password} maxLength={128} onChange={(e) => setPassword(e.target.value)} placeholder="Sem senha" autoComplete="off" />
               </div>
               {isLocalOrigin() && (
                 <div className="field">
@@ -416,7 +422,7 @@ export default function HostPage() {
                         {v.connection === 'connected' ? 'conectado' : v.connection === 'new' ? 'iniciando' : v.connection === 'connecting' ? 'conectando' : 'instável'}
                       </span>
                     </div>
-                    {v.connection !== 'connected' && Date.now() - v.since > 15000 && (
+                    {v.connection !== 'connected' && now - v.since > 15000 && (
                       <div className="v-stats">
                         <span className="warnline">
                           Sem vídeo para {v.name} há mais de 15 s{hasTurn ? '.' : ': provável NAT/CGNAT — configure um servidor TURN.'}
