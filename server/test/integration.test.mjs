@@ -3,6 +3,7 @@ import test from 'node:test';
 import { io } from 'socket.io-client';
 import { command } from '../../scripts/register-discord-command.mjs';
 import { clientIpFromHeaders } from '../dist/client-ip.js';
+import { getIceServers, hasTurn, normalizeIceServers } from '../dist/config.js';
 
 test('IP encaminhado só é confiável na quantidade configurada de proxies', () => {
   assert.equal(clientIpFromHeaders('10.0.0.2', '198.51.100.77, 203.0.113.8', 1), '203.0.113.8');
@@ -40,23 +41,90 @@ test('payload do Primary Entry Point é compatível com Discord Activities', () 
   });
 });
 
+test('respostas ICE são validadas e TURN só é considerado configurado com credenciais', () => {
+  const stun = normalizeIceServers([{ urls: ['stun:stun.example:53', 'stun:stun.example:3478'] }]);
+  assert.deepEqual(stun, [{ urls: 'stun:stun.example:3478' }]);
+  assert.equal(hasTurn(stun), false);
+
+  const turn = normalizeIceServers({
+    iceServers: [{ urls: 'turn:turn.example:3478?transport=udp', username: 'temporary', credential: 'secret' }],
+  });
+  assert.equal(hasTurn(turn), true);
+  assert.throws(() => normalizeIceServers([{ urls: 'turn:turn.example:3478' }]), /TURN credentials/);
+  assert.throws(() => normalizeIceServers([{ urls: 'not-an-ice-url' }]), /invalid ICE server URL/);
+  assert.throws(() => normalizeIceServers([]), /invalid ICE server response/);
+});
+
+test('credenciais ICE externas são compartilhadas entre chamadas e nunca reutilizadas após expirar', async () => {
+  const keys = ['ICE_API_URL', 'CF_TURN_KEY_ID', 'CF_TURN_API_TOKEN', 'STUN_URLS', 'TURN_URLS', 'TURN_SECRET', 'TURN_USERNAME', 'TURN_CREDENTIAL'];
+  const savedEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const originalFetch = globalThis.fetch;
+  const originalNow = Date.now;
+  let fetchCount = 0;
+  const now = Date.now();
+
+  for (const key of keys) delete process.env[key];
+  process.env.ICE_API_URL = 'https://ice.example/credentials';
+  Date.now = () => now;
+  globalThis.fetch = async () => {
+    fetchCount++;
+    return {
+      ok: true,
+      json: async () => [{ urls: 'turn:turn.example:3478?transport=udp', username: 'temporary', credential: 'secret' }],
+    };
+  };
+
+  try {
+    const [first, concurrent] = await Promise.all([getIceServers(), getIceServers()]);
+    assert.equal(fetchCount, 1);
+    assert.equal(hasTurn(first), true);
+    assert.equal(hasTurn(concurrent), true);
+
+    Date.now = () => now + 3_600_001;
+    globalThis.fetch = async () => {
+      fetchCount++;
+      throw new Error('provider unavailable');
+    };
+    const expired = await getIceServers();
+    assert.equal(fetchCount, 2);
+    assert.equal(hasTurn(expired), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+    for (const key of keys) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  }
+});
+
 test('sala é publicada automaticamente na Activity e aceita sinalização', async (t) => {
+  const iceEnvKeys = ['ICE_API_URL', 'CF_TURN_KEY_ID', 'CF_TURN_API_TOKEN', 'STUN_URLS', 'TURN_URLS', 'TURN_SECRET', 'TURN_USERNAME', 'TURN_CREDENTIAL'];
+  const savedIceEnv = Object.fromEntries(iceEnvKeys.map((key) => [key, process.env[key]]));
+  for (const key of iceEnvKeys) delete process.env[key];
   const { io: ioServer, server, startServer } = await import('../dist/index.js');
+  const clients = [];
+  t.after(async () => {
+    clients.forEach((socket) => socket.disconnect());
+    await new Promise((resolve) => ioServer.close(resolve));
+    for (const key of iceEnvKeys) {
+      if (savedIceEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedIceEnv[key];
+    }
+  });
   await startServer({ port: 0, host: '127.0.0.1', log: false });
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   const port = address.port;
   const url = `http://127.0.0.1:${port}`;
-  const clients = [];
-  t.after(() => {
-    clients.forEach((socket) => socket.disconnect());
-    return new Promise((resolve) => ioServer.close(resolve));
-  });
 
   const health = await fetch(`${url}/api/health`);
   assert.equal(health.ok, true);
+  assert.deepEqual(await health.json(), { ok: true });
   assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
   assert.match(health.headers.get('content-security-policy'), /frame-ancestors/);
+  assert.match(health.headers.get('content-security-policy'), new RegExp(`connect-src 'self' ws://127\\.0\\.0\\.1:${port}`));
+  assert.doesNotMatch(health.headers.get('content-security-policy'), /connect-src[^;]*\bwss?:\s/);
   const foreignOrigin = io(url, {
     transports: ['websocket'],
     timeout: 3000,
@@ -79,7 +147,8 @@ test('sala é publicada automaticamente na Activity e aceita sinalização', asy
   const secondViewer = await connect(url);
   const raceViewer = await connect(url);
   const passwordViewer = await connect(url);
-  clients.push(activity, host, secondHost, replacementHost, thirdHost, viewer, secondViewer, raceViewer, passwordViewer);
+  const capacityHosts = await Promise.all([connect(url), connect(url), connect(url), connect(url), connect(url)]);
+  clients.push(activity, host, secondHost, replacementHost, thirdHost, viewer, secondViewer, raceViewer, passwordViewer, ...capacityHosts);
 
   const instanceId = 'test-instance-123';
   const joined = await emitAck(activity, 'activity:join', instanceId);
@@ -105,6 +174,18 @@ test('sala é publicada automaticamente na Activity e aceita sinalização', asy
     { roomId: room.roomId, title: 'Tela 1' },
     { roomId: secondRoom.roomId, title: 'Tela 2' },
   ]);
+  const capacityRooms = await Promise.all(capacityHosts.map((socket) => emitAck(socket, 'room:create', {})));
+  assert.ok(capacityRooms.every((result) => result.ok));
+  for (let index = 0; index < 4; index++) {
+    assert.equal(
+      (await emitAck(capacityHosts[index], 'activity:publish', { instanceId: 'capacity-room-123', roomId: capacityRooms[index].roomId })).ok,
+      true,
+    );
+  }
+  assert.equal(
+    (await emitAck(capacityHosts[4], 'activity:publish', { instanceId: 'capacity-room-123', roomId: capacityRooms[4].roomId })).error,
+    'activity_full',
+  );
   const raceJoinNotice = new Promise((resolve) => {
     host.once('viewer:joined', resolve);
     secondHost.once('viewer:joined', resolve);
@@ -165,4 +246,37 @@ test('sala é publicada automaticamente na Activity e aceita sinalização', asy
   secondHost.emit('room:end');
   thirdHost.emit('room:end');
   assert.deepEqual(await removed, []);
+
+  assert.equal((await emitAck(activity, 'activity:join', 'capacity-room-123')).ok, true);
+  const firstCapacityRemoval = new Promise((resolve) => activity.once('activity:streams', resolve));
+  capacityHosts[0].emit('room:end');
+  assert.deepEqual(await firstCapacityRemoval, [
+    { roomId: capacityRooms[1].roomId, title: 'Tela 2' },
+    { roomId: capacityRooms[2].roomId, title: 'Tela 3' },
+    { roomId: capacityRooms[3].roomId, title: 'Tela 4' },
+  ]);
+  for (let index = 1; index < 4; index++) {
+    const remaining = Array.from({ length: 3 - index }, (_, offset) => ({
+      roomId: capacityRooms[index + offset + 1].roomId,
+      title: `Tela ${index + offset + 2}`,
+    }));
+    const removal = new Promise((resolve) => activity.once('activity:streams', resolve));
+    capacityHosts[index].emit('room:end');
+    assert.deepEqual(await removal, remaining);
+  }
+  capacityHosts[4].emit('room:end');
+
+  const rateLimitedJoiner = await connect(url);
+  clients.push(rateLimitedJoiner);
+  const joinAttempts = await Promise.all(
+    Array.from({ length: 65 }, () => emitAck(rateLimitedJoiner, 'room:join', { roomId: 'missing-room' })),
+  );
+  assert.ok(joinAttempts.some((result) => result.error === 'rate_limited'));
+
+  const resumeAttempts = await Promise.all(
+    Array.from({ length: 25 }, () =>
+      emitAck(staleHost, 'room:resume', { roomId: room.roomId, hostToken: 'invalid-host-token-value-000000' }),
+    ),
+  );
+  assert.ok(resumeAttempts.some((result) => result.error === 'rate_limited'));
 });

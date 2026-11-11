@@ -2,7 +2,7 @@ import type { Socket } from 'socket.io-client';
 import { AudioMixer, RES, codecMime, targetBitrate } from './media';
 import { createSocket, emitAck } from './socket';
 import type { CaptureSettings, IceServerCfg, PeerStats, QualityChoice, ToastKind, ViewerInfo } from './types';
-import { isRelayPair, pairRttMs, tuneOpus } from './webrtc';
+import { isRelayPair, logWebRtcFailure, pairRttMs, tuneOpus } from './webrtc';
 
 interface Peer {
   id: string;
@@ -13,6 +13,7 @@ interface Peer {
   quality: QualityChoice;
   createdAt: number;
   queue: Promise<void>;
+  pendingCandidates: RTCIceCandidateInit[];
   lastBytes: number;
   lastTs: number;
   stats?: PeerStats;
@@ -40,6 +41,7 @@ export class HostBroadcaster {
   private statsTimer?: number;
   private ended = false;
   private everConnected = false;
+  private resuming = false;
   roomId = '';
   /** true se o servidor entregou ao menos um servidor TURN (relay) na lista ICE. */
   hasTurn = false;
@@ -58,36 +60,42 @@ export class HostBroadcaster {
 
   async start(password?: string): Promise<string> {
     this.password = password;
-    await new Promise<void>((resolve, reject) => {
-      const t = window.setTimeout(() => reject(new Error('Não foi possível conectar ao servidor de sinalização.')), 10000);
-      this.socket.once('connect', () => {
-        window.clearTimeout(t);
-        resolve();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const t = window.setTimeout(() => reject(new Error('Não foi possível conectar ao servidor de sinalização.')), 10000);
+        this.socket.once('connect', () => {
+          window.clearTimeout(t);
+          resolve();
+        });
+        if (this.socket.connected) {
+          window.clearTimeout(t);
+          resolve();
+        }
       });
-      if (this.socket.connected) {
-        window.clearTimeout(t);
-        resolve();
+      const res = await emitAck<{ ok: boolean; roomId?: string; hostToken?: string; iceServers?: IceServerCfg[]; turn?: boolean; error?: string }>(
+        this.socket,
+        'room:create',
+        { password },
+      );
+      if (!res.ok || !res.roomId || !res.hostToken) {
+        throw new Error(res.error === 'rate_limited' ? 'Muitas salas criadas. Aguarde um minuto.' : 'Falha ao criar a sala.');
       }
-    });
-    const res = await emitAck<{ ok: boolean; roomId?: string; hostToken?: string; iceServers?: IceServerCfg[]; turn?: boolean; error?: string }>(
-      this.socket,
-      'room:create',
-      { password },
-    );
-    if (!res.ok || !res.roomId || !res.hostToken) {
+      this.roomId = res.roomId;
+      this.hostToken = res.hostToken;
+      this.iceServers = res.iceServers ?? [];
+      this.hasTurn = !!res.turn;
+      this.everConnected = true;
+      this.bind();
+      await this.publishToActivity();
+      this.statsTimer = window.setInterval(() => void this.pollStats(), 2000);
+      this.h.onStatus('live');
+      return this.roomId;
+    } catch (error) {
+      this.socket.emit('room:end');
+      this.socket.removeAllListeners();
       this.socket.disconnect();
-      throw new Error(res.error === 'rate_limited' ? 'Muitas salas criadas. Aguarde um minuto.' : 'Falha ao criar a sala.');
+      throw error;
     }
-    this.roomId = res.roomId;
-    this.hostToken = res.hostToken;
-    this.iceServers = res.iceServers ?? [];
-    this.hasTurn = !!res.turn;
-    this.everConnected = true;
-    this.bind();
-    await this.publishToActivity();
-    this.statsTimer = window.setInterval(() => void this.pollStats(), 2000);
-    this.h.onStatus('live');
-    return this.roomId;
   }
 
   private bind() {
@@ -104,7 +112,9 @@ export class HostBroadcaster {
     s.on('signal', (msg: { from: string; data: any }) => {
       const peer = this.peers.get(msg.from);
       if (!peer) return;
-      peer.queue = peer.queue.then(() => this.handleSignal(peer, msg.data)).catch(() => undefined);
+      peer.queue = peer.queue.then(() => this.handleSignal(peer, msg.data)).catch((error: unknown) => {
+        logWebRtcFailure('host.signal', error);
+      });
     });
     s.on('disconnect', () => {
       if (this.ended) return;
@@ -119,6 +129,8 @@ export class HostBroadcaster {
   }
 
   private async resume() {
+    if (this.resuming || this.ended) return;
+    this.resuming = true;
     try {
       const res = await emitAck<{ ok: boolean; hostToken?: string; viewers?: { id: string; name: string }[]; iceServers?: IceServerCfg[] }>(
         this.socket,
@@ -141,8 +153,11 @@ export class HostBroadcaster {
         if (!p || p.pc.connectionState === 'failed' || p.pc.connectionState === 'closed') this.createPeer(v.id, v.name);
       }
       this.emitViewers();
-    } catch {
+    } catch (error) {
+      logWebRtcFailure('host.resume', error);
       this.h.onNotify('error', 'Falha ao retomar a sala.');
+    } finally {
+      this.resuming = false;
     }
   }
 
@@ -173,11 +188,23 @@ export class HostBroadcaster {
   private createPeer(id: string, name: string) {
     this.closePeer(id);
     const pc = new RTCPeerConnection({ iceServers: this.iceServers, bundlePolicy: 'max-bundle' });
-    const peer: Peer = { id, name, pc, quality: 'source', createdAt: Date.now(), queue: Promise.resolve(), lastBytes: 0, lastTs: 0 };
+    const peer: Peer = {
+      id,
+      name,
+      pc,
+      quality: 'source',
+      createdAt: Date.now(),
+      queue: Promise.resolve(),
+      pendingCandidates: [],
+      lastBytes: 0,
+      lastTs: 0,
+    };
     this.peers.set(id, peer);
 
     pc.onicecandidate = (e) => {
-      if (e.candidate) this.socket.emit('signal:to-viewer', { to: id, data: { type: 'candidate', candidate: e.candidate.toJSON() } });
+      if (e.candidate && !this.ended && this.peers.get(id) === peer) {
+        this.socket.emit('signal:to-viewer', { to: id, data: { type: 'candidate', candidate: e.candidate.toJSON() } });
+      }
     };
     pc.onconnectionstatechange = () => this.onPeerState(peer);
 
@@ -214,14 +241,18 @@ export class HostBroadcaster {
     peer.queue = peer.queue
       .then(async () => {
         const { pc } = peer;
-        if (pc.signalingState === 'closed') return;
+        if (this.ended || this.peers.get(peer.id) !== peer || pc.signalingState === 'closed') return;
         const offer = await pc.createOffer({ iceRestart });
+        if (this.ended || this.peers.get(peer.id) !== peer) return;
         offer.sdp = tuneOpus(offer.sdp ?? '');
         await pc.setLocalDescription(offer);
+        if (this.ended || this.peers.get(peer.id) !== peer) return;
         this.socket.emit('signal:to-viewer', { to: peer.id, data: { type: 'offer', sdp: pc.localDescription?.sdp } });
         await this.applySenderParams(peer);
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        logWebRtcFailure('host.createOffer', error);
+      });
   }
 
   private async handleSignal(peer: Peer, data: any) {
@@ -229,15 +260,26 @@ export class HostBroadcaster {
     if (!data || pc.signalingState === 'closed') return;
     if (data.type === 'answer') {
       await pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
+      await this.flushCandidates(peer);
     } else if (data.type === 'candidate' && data.candidate) {
-      try {
-        await pc.addIceCandidate(data.candidate);
-      } catch {
-        /* candidato tardio/inválido */
-      }
+      if (!pc.remoteDescription) peer.pendingCandidates.push(data.candidate);
+      else await this.addCandidate(peer, data.candidate);
     } else if (data.type === 'request-offer') {
       // O espectador perdeu a conexão e pede uma nova negociação do zero.
       this.createPeer(peer.id, peer.name);
+    }
+  }
+
+  private async flushCandidates(peer: Peer) {
+    for (const candidate of peer.pendingCandidates.splice(0)) await this.addCandidate(peer, candidate);
+  }
+
+  private async addCandidate(peer: Peer, candidate: RTCIceCandidateInit) {
+    if (this.peers.get(peer.id) !== peer || peer.pc.signalingState === 'closed') return;
+    try {
+      await peer.pc.addIceCandidate(candidate);
+    } catch (error) {
+      logWebRtcFailure('host.addIceCandidate', error);
     }
   }
 
@@ -292,8 +334,8 @@ export class HostBroadcaster {
       enc.networkPriority = 'high';
       (p as any).degradationPreference = this.settings.content === 'detail' ? 'maintain-resolution' : 'maintain-framerate';
       await sender.setParameters(p);
-    } catch {
-      /* alguns navegadores recusam parâmetros — o controle de congestionamento nativo continua ativo */
+    } catch (error) {
+      logWebRtcFailure('host.setSenderParameters', error);
     }
   }
 
@@ -351,7 +393,8 @@ export class HostBroadcaster {
           lossPct: typeof remote?.fractionLost === 'number' ? remote.fractionLost * 100 : null,
           route: isRelayPair(report),
         };
-      } catch {
+      } catch (error) {
+        logWebRtcFailure('host.getStats', error);
         /* peer fechando */
       }
     }
@@ -377,6 +420,11 @@ export class HostBroadcaster {
     window.clearTimeout(p.restartTimer);
     p.pc.onconnectionstatechange = null;
     p.pc.onicecandidate = null;
+    if (p.dc) {
+      p.dc.onmessage = null;
+      p.dc.onopen = null;
+      p.dc.onclose = null;
+    }
     try {
       p.dc?.close();
       p.pc.close();

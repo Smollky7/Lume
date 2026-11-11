@@ -35,16 +35,22 @@ app.use((req, res, next) => {
 });
 app.set('trust proxy', TRUST_PROXY_HOPS);
 
-app.use((_req, res, next) => {
+app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   // Discord Activities use an iframe. CSP restricts who can embed the app.
   // X-Frame-Options DENY would block the Activity.
   res.setHeader('Permissions-Policy', 'display-capture=(self), microphone=(self), camera=()');
+  const host = req.get('host') ?? '';
+  const websocketSource = /^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i.test(host)
+    ? `${req.secure ? 'wss' : 'ws'}://${host}`
+    : '';
+  const connectSources = ["'self'", websocketSource, 'https://*.discordsays.com', 'wss://*.discordsays.com'].filter(Boolean);
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; " +
-      "media-src 'self' blob: mediastream:; connect-src 'self' ws: wss:; frame-ancestors 'self' https://discord.com https://*.discordsays.com",
+      `media-src 'self' blob: mediastream:; connect-src ${connectSources.join(' ')}; ` +
+      "frame-ancestors 'self' https://discord.com https://*.discordsays.com",
   );
   next();
 });
@@ -89,7 +95,7 @@ function activityList(id: string): ActivityStream[] {
   return (activityStreams.get(id) || []).filter(s => rooms.has(s.roomId));
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, rooms: rooms.size }));
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
 app.get('/api/rooms/:id', (req, res) => {
   if (!hit(`lookup:${req.ip}`, 60, 60_000)) return res.status(429).json({ error: 'rate_limited' });
@@ -212,6 +218,7 @@ io.on('connection', (socket) => {
   socket.on('room:resume', async (payload: { roomId?: string; hostToken?: string } | undefined, ack?: Ack) => {
     if (typeof ack !== 'function') return;
     if (roomId || role || roomPending) return ack({ ok: false, error: 'already_in_room' });
+    if (!hit(`resume:${ip}`, 20, 60_000)) return ack({ ok: false, error: 'rate_limited' });
     const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
     if (!room || !verifyHostToken(room, payload?.hostToken)) return ack({ ok: false, error: 'not_found' });
     roomPending = true;
@@ -250,6 +257,7 @@ io.on('connection', (socket) => {
     async (payload: { roomId?: string; password?: string; name?: string } | undefined, ack?: Ack) => {
       if (typeof ack !== 'function') return;
       if (roomId || role || roomPending) return ack({ ok: false, error: 'already_in_room' });
+      if (!hit(`join:${ip}`, 60, 60_000)) return ack({ ok: false, error: 'rate_limited' });
       const room = typeof payload?.roomId === 'string' ? rooms.get(payload.roomId) : undefined;
       if (!room) return ack({ ok: false, error: 'not_found' });
       roomPending = true;
@@ -366,7 +374,7 @@ export async function startServer(options: { port?: number; host?: string; log?:
     console.log(`\n  Lume rodando em http://localhost:${port}`);
     console.log(
       turn
-        ? '  TURN: configurado (conexões atrás de NAT/CGNAT podem usar relay)'
+        ? '  TURN: credenciais configuradas (conectividade não foi verificada)'
         : '  TURN: NÃO configurado — entre redes diferentes a conexão de vídeo pode travar em "estabelecendo conexão" (veja o README)',
     );
     console.log(`  Frontend compilado: ${fs.existsSync(clientDist) ? 'sim' : 'não (use npm run dev)'}\n`);

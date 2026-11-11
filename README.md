@@ -9,7 +9,11 @@ Compartilhamento de tela pelo navegador, com transporte de mídia WebRTC peer-to
 - Vários espectadores por transmissão, com limite configurável.
 - Reconexão do host por token de uso restrito e encerramento automático após período de tolerância.
 - Ajustes de resolução, FPS, codec, qualidade do espectador e tela cheia.
-- Lista efêmera de transmissões por instância da Activity.
+- Lista efêmera pública de até quatro transmissões por chave de Activity; o ID não comprova participação na chamada.
+
+## Capturas de tela
+
+Capturas reais da interface serão adicionadas após validação em navegador e Discord. Nenhuma imagem de demonstração está incluída neste repositório.
 
 ## Stack
 
@@ -42,6 +46,8 @@ npm test
 npm run build
 ```
 
+O build de produção fica em `client/dist` e `server/dist`; use `npm start` para iniciar o backend compilado. Configure opções de ICE/STUN/TURN no ambiente do servidor, nunca em variáveis `VITE_*`. Veja [.env.example](.env.example) e [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 Consulte [docs/TESTING.md](docs/TESTING.md) para os testes automatizados e o roteiro manual.
 
 ## Arquitetura e deploy
@@ -52,7 +58,7 @@ As instruções de produção ficam em [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md);
 
 ## Discord Activity
 
-Configure URL Mappings no Developer Portal: primeiro `/backend` para o host do backend e depois `/` para o frontend. Configure `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL`, `VITE_BACKEND_URL` no build do frontend, e `FRONTEND_URL` no backend.
+Configure URL Mappings no Developer Portal: `/backend` aponta ao host do backend e `/` ao frontend. O código chama o proxy usando `/.proxy/backend`; configure o mapping `backend` antes do mapping `/`. Configure `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL`, `VITE_BACKEND_URL` no build do frontend, e `FRONTEND_URL` no backend.
 
 O `instanceId` organiza a lista da Activity, mas não autentica uma pessoa nem prova que ela participa daquela chamada. As salas anunciadas sem senha são acessíveis a quem obtiver o ID/link. Veja as implicações em [docs/SECURITY.md](docs/SECURITY.md).
 
@@ -61,3 +67,5 @@ O `instanceId` organiza a lista da Activity, mas não autentica uma pessoa nem p
 Não versione `.env`, chaves TURN, tokens do Discord ou segredos. Variáveis `VITE_` são públicas no bundle. Limites e orientações de publicação estão em [docs/SECURITY.md](docs/SECURITY.md); restrições reais de navegador, Discord, NAT e escala estão em [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 Este repositório não inclui uma demonstração pública permanente. Nenhum teste local equivale a uma validação real do Discord, de TURN ou de um deploy público.
+
+O projeto está em desenvolvimento. A publicação do código, uma licença open source, contribuições externas e uso em produção são decisões distintas; este repositório não inclui uma licença.

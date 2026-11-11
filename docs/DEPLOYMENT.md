@@ -4,9 +4,9 @@
 
 Copie `.env.example` para `.env` no desenvolvimento. Em produção, use somente o cofre de variáveis do provedor.
 
-Backend: `NODE_ENV=production`, `FRONTEND_URL`, `TRUST_PROXY_HOPS`, limites de recurso e uma opção TURN. Para TURN, use credenciais temporárias por API, Cloudflare Realtime ou coturn com segredo compartilhado; nunca exponha o segredo no frontend.
+Backend: `NODE_ENV=production`, `FRONTEND_URL`, `TRUST_PROXY_HOPS`, limites de recurso e uma opção TURN. Para TURN, prefira credenciais temporárias por API, Cloudflare Realtime ou coturn com segredo compartilhado. O servidor envia as credenciais de relay aos navegadores; nunca envie a chave de API ou o segredo TURN ao frontend. Credenciais fixas devem ser temporárias/restritas.
 
-Frontend: `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL` e `VITE_BACKEND_URL`. Esses valores são públicos. O backend usa CORS e a CSP do Vercel depende do host Render configurado neste projeto; ajuste `client/vercel.json` para outro provedor/domínio.
+Frontend: `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL` e `VITE_BACKEND_URL`. Esses valores são públicos. `FRONTEND_URL` configura CORS no backend; não configura a CSP do Vercel. `client/vercel.json` é estático e atualmente permite `*.onrender.com`. Se `VITE_BACKEND_URL` usar um domínio próprio ou outro provedor, substitua as entradas HTTPS e WSS pelos hostnames exatos da infraestrutura antes do build. Não existe um hostname de produção definido neste repositório, portanto nenhuma origem customizada foi presumida.
 
 ## Render + Vercel
 
@@ -14,7 +14,7 @@ Frontend: `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL` e `VITE_BACKEND_URL`. Esse
 2. Configure `FRONTEND_URL` e `TRUST_PROXY_HOPS=1` no Render. O manifesto `render.yaml` já traz esses valores, mas deixa origens e ICE API como configuração manual.
 3. Crie o projeto Vercel com Root Directory `client`, Build Command `npm run build` e Output Directory `dist`.
 4. Configure as variáveis públicas `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL` e `VITE_BACKEND_URL`, depois faça build/deploy no provedor.
-5. No Developer Portal, habilite Activities e configure `/backend` antes de `/`: `/backend` aponta ao host do backend; `/` ao host do frontend. Não inclua protocolo nos Targets.
+5. No Developer Portal, habilite Activities e configure o prefixo `/backend` para o host do backend e o prefixo `/` para o frontend. O cliente acessa o backend por `/.proxy/backend/...`; mantenha esse caminho e a ordem dos mappings coerentes com `client/src/lib/socket.ts`. Não inclua protocolo nos Targets.
 6. Configure TURN e teste uma conexão real em outra rede. STUN sozinho não atravessa todas as redes.
 
 Use domínios públicos próprios do seu projeto. Este repositório não registra os endpoints de uma implantação específica.
@@ -34,5 +34,6 @@ Revise os IPs privados bloqueados pelo coturn conforme a rede da sua infraestrut
 - Use uma única instância. Não habilite autoscaling horizontal sem adapter/estado compartilhado.
 - Configure limites de CPU/memória e monitore conexões, salas, tráfego e erros Socket.IO.
 - O health check não testa TURN, Discord, captura de tela ou conectividade WebRTC.
+- Uma URL/credencial TURN na configuração indica disponibilidade de configuração, não sucesso de conectividade; confirme a rota `relay` em `getStats()` durante teste real.
 - Faça rotação de chaves TURN e tokens administrativos fora do Git.
 - Deploy não foi executado como parte desta auditoria.

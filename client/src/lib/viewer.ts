@@ -1,7 +1,7 @@
 import type { Socket } from 'socket.io-client';
 import { createSocket, emitAck } from './socket';
 import type { IceServerCfg, QualityChoice, ToastKind } from './types';
-import { isRelayPair, pairRttMs, tuneOpus } from './webrtc';
+import { isRelayPair, logWebRtcFailure, pairRttMs, tuneOpus } from './webrtc';
 
 export type ViewerStatus = 'connecting' | 'waiting' | 'live' | 'paused' | 'reconnecting' | 'host-offline' | 'stalled' | 'ended';
 export type EndReason = 'host_ended' | 'host_gone' | 'not_found' | 'bad_password' | 'room_full' | 'rate_limited' | 'error';
@@ -31,6 +31,7 @@ export class ViewerClient {
   private dc?: RTCDataChannel;
   private iceServers: IceServerCfg[] = [];
   private queue: Promise<void> = Promise.resolve();
+  private pendingCandidates: RTCIceCandidateInit[] = [];
   private quality: QualityChoice = 'source';
   private pingTimer?: number;
   private statsTimer?: number;
@@ -63,7 +64,9 @@ export class ViewerClient {
       this.h.onStatus('reconnecting');
     });
     s.on('signal', (msg: { data: any }) => {
-      this.queue = this.queue.then(() => this.handleSignal(msg.data)).catch(() => undefined);
+      this.queue = this.queue.then(() => this.handleSignal(msg.data)).catch((error: unknown) => {
+        logWebRtcFailure('viewer.signal', error);
+      });
     });
     s.on('room:viewers', (m: { count: number }) => this.h.onViewers(m.count));
     s.on('room:state', (m: { state: 'live' | 'paused' }) => {
@@ -116,11 +119,13 @@ export class ViewerClient {
   private async handleSignal(data: any) {
     if (!data) return;
     if (data.type === 'offer') {
-      this.resetPc();
+      this.resetPc(false);
       const pc = new RTCPeerConnection({ iceServers: this.iceServers, bundlePolicy: 'max-bundle' });
       this.pc = pc;
       pc.onicecandidate = (e) => {
-        if (e.candidate) this.socket.emit('signal:to-host', { data: { type: 'candidate', candidate: e.candidate.toJSON() } });
+        if (e.candidate && this.pc === pc && !this.closed) {
+          this.socket.emit('signal:to-host', { data: { type: 'candidate', candidate: e.candidate.toJSON() } });
+        }
       };
       pc.ontrack = (e) => {
         try {
@@ -140,16 +145,28 @@ export class ViewerClient {
         }, 15000);
       }
       await pc.setRemoteDescription({ type: 'offer', sdp: data.sdp });
+      await this.flushCandidates(pc);
       const answer = await pc.createAnswer();
       answer.sdp = tuneOpus(answer.sdp ?? '');
       await pc.setLocalDescription(answer);
+      if (this.pc !== pc || this.closed) return;
       this.socket.emit('signal:to-host', { data: { type: 'answer', sdp: pc.localDescription?.sdp } });
-    } else if (data.type === 'candidate' && data.candidate && this.pc) {
-      try {
-        await this.pc.addIceCandidate(data.candidate);
-      } catch {
-        /* ignore */
-      }
+    } else if (data.type === 'candidate' && data.candidate) {
+      if (!this.pc?.remoteDescription) this.pendingCandidates.push(data.candidate);
+      else await this.addCandidate(this.pc, data.candidate);
+    }
+  }
+
+  private async flushCandidates(pc: RTCPeerConnection) {
+    for (const candidate of this.pendingCandidates.splice(0)) await this.addCandidate(pc, candidate);
+  }
+
+  private async addCandidate(pc: RTCPeerConnection, candidate: RTCIceCandidateInit) {
+    if (this.pc !== pc || pc.signalingState === 'closed') return;
+    try {
+      await pc.addIceCandidate(candidate);
+    } catch (error) {
+      logWebRtcFailure('viewer.addIceCandidate', error);
     }
   }
 
@@ -237,7 +254,7 @@ export class ViewerClient {
     if (this.dc?.readyState === 'open') this.dc.send(JSON.stringify({ t: 'quality', value: q }));
   }
 
-  private resetPc() {
+  private resetPc(clearPendingCandidates = true) {
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.statsTimer);
     window.clearTimeout(this.recoverTimer);
@@ -246,8 +263,17 @@ export class ViewerClient {
     this.lastTs = 0;
     this.lastJbCount = 0;
     this.lastJbDelay = 0;
+    if (clearPendingCandidates) this.pendingCandidates = [];
     if (this.pc) {
       this.pc.onconnectionstatechange = null;
+      this.pc.onicecandidate = null;
+      this.pc.ontrack = null;
+      this.pc.ondatachannel = null;
+      if (this.dc) {
+        this.dc.onopen = null;
+        this.dc.onmessage = null;
+        this.dc.onclose = null;
+      }
       try {
         this.dc?.close();
         this.pc.close();

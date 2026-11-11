@@ -20,9 +20,10 @@ Os testes Node cobrem formato do comando Discord, IP encaminhado por quantidade 
 4. Confirmar compartilhamento de áudio do sistema em combinações suportadas pelo navegador e microfone, se habilitado.
 5. Alterar qualidade, pausar/retomar, parar pelo navegador e encerrar pelo host.
 6. Desconectar/reconectar o host antes e depois do período de tolerância; confirmar token rotacionado e remoção da sessão antiga.
-7. Testar redes distintas com TURN, observando rota relay e áudio/vídeo.
-8. Testar Activity desktop e mobile, abertura externa de host/player, anúncio e remoção da transmissão.
-9. Testar origens permitidas e não permitidas no domínio de produção, bem como CSP e WebSocket.
+7. Cancelar captura, negar permissão e testar dispositivo sem áudio; confirmar mensagem útil e que faixas/capturas parciais são encerradas.
+8. Testar redes distintas com TURN, observando rota relay e áudio/vídeo; repetir com TURN ausente ou indisponível e confirmar que o app reporta a limitação sem alegar que a presença de configuração garante conexão.
+9. Testar Activity desktop e mobile, URL Mapping de prefixo `/backend` pelo caminho `/.proxy/backend`, abertura externa de host/player, anúncio e remoção da transmissão.
+10. Testar origens permitidas e não permitidas no domínio de produção, CSP, HTTPS/WSS, Vercel com domínio Render e, se escolhido, backend em domínio próprio com origens CSP exatas.
 
 ## Limites da validação
 

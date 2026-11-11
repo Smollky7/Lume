@@ -11,7 +11,11 @@
 
 `instanceId` não é autenticação. O cliente pode enviar qualquer valor que passe pela validação de formato, e qualquer cliente que conheça esse valor pode assinar a lista daquela chave. Um host de qualquer sala aberta também pode anunciar sua sala sob qualquer `instanceId` válido: o backend verifica a propriedade da sala, mas não a participação do host naquela Activity. Portanto, a lista não é isolada por chamada e pode receber anúncios não solicitados. Uma Activity transmite somente salas sem senha; possuir o ID da sala continua permitindo a entrada, conforme o modelo de convite.
 
-O Embedded App SDK oferece comandos de autorização/autenticação para obter identidade Discord e comandos de participantes da instância. Este backend não implementa troca OAuth2 nem valida membership Discord por uma prova verificável no servidor. Um access token que identifica uma conta, por si só, também não prova participação em uma instância específica. Antes de usar o lobby para conteúdo privado ou impor publicação somente a participantes, implemente uma autorização server-side baseada em credenciais verificáveis e valide o vínculo entre conta, instância e permissão; não aceite uma lista de participantes fornecida pelo navegador como prova. O fluxo oficial documentado pelo SDK retorna um authorization code para troca no servidor e depois autentica o cliente; esse fluxo não foi implementado nem testado neste projeto.
+As fontes oficiais documentam mecanismos server-side: `GET /api/applications/{application_id}/activity-instances/{instance_id}` exige o Bot token da aplicação e devolve, entre outros dados, os IDs dos usuários ativos; o proxy também pode assinar requests com `X-Signature-Ed25519`, `X-Signature-Timestamp` e `X-Discord-Proxy-Payload`. O SDK documenta `authorize()`/`authenticate()` e uma lista de participantes no cliente, mas autenticação de identidade, assinatura de request e associação da identidade ao `instanceId` são verificações distintas. Este backend não chama o endpoint de instâncias, não valida assinaturas do proxy e não implementa troca OAuth2 nem associação de um usuário autenticado à lista retornada pelo Discord. Não aceite uma lista de participantes fornecida pelo navegador como prova.
+
+Até que essa integração server-side seja configurada e validada, mantenha o lobby explicitamente público. Para torná-lo privado, implemente a validação do request e do vínculo identidade/instância conforme os fluxos oficiais, mantenha credenciais somente no backend e teste tentativas externas e de outro usuário.
+
+Fontes oficiais consultadas em 2026-11-11: [referência do Embedded App SDK](https://docs.discord.com/developers/developer-tools/embedded-app-sdk); [guia de construção de Activities](https://docs.discord.com/developers/activities/building-an-activity); [guia de multiplayer, validação de instância e proxy](https://docs.discord.com/developers/activities/development-guides/multiplayer-experience.md); [guia de URL Mappings e proxy](https://docs.discord.com/developers/activities/development-guides/local-development.md#url-mapping). Nenhum fluxo de autenticação/membership foi implementado ou testado neste projeto.
 
 ## Controles implementados
 
@@ -29,9 +33,12 @@ Os rate limits e contadores são locais à instância e podem ser contornados po
 
 - Nunca versionar `.env`, tokens de bot, client secret, chave TURN ou credenciais de API TURN.
 - `VITE_*` é conteúdo público incluído no bundle; nunca coloque segredos nessas variáveis.
-- Configure `FRONTEND_URL` com todas as origens reais. Se o backend TURN for diferente de Render, ajuste também `connect-src` da CSP em `client/vercel.json`.
+- `TURN_USERNAME`/`TURN_CREDENTIAL` são enviados ao navegador junto com as configurações ICE. Use somente credenciais de relay limitadas e temporárias; prefira credenciais temporárias por Cloudflare, coturn com segredo ou API de provedor. Nunca envie a chave de API/segredo do provedor ao frontend.
+- Configure `FRONTEND_URL` com todas as origens reais. CORS e handshake Socket.IO validam essas origens. `client/vercel.json` é estático e libera `*.onrender.com`; para backend em domínio próprio, substitua esse padrão pelo hostname exato antes do build/publicação. Não acrescente curingas genéricos.
+- A CSP emitida pelo backend limita WebSocket ao host da requisição e aos hosts de proxy `discordsays.com`; ela não é uma prova de conectividade. A CSP Vercel precisa permitir o backend real de forma explícita.
 - `TRUST_PROXY_HOPS=1` só é correto quando há exatamente um proxy confiável. Não aumente sem conferir a topologia e como ela sobrescreve/acrescenta `X-Forwarded-For`.
 - A auditoria encontrou advisory alto sem correção disponível para a cópia de Zod empacotada pelo `@discord/embedded-app-sdk`. Atualize o SDK quando houver versão corrigida; não force um override de major sem compatibilidade validada.
+- A existência de URL TURN/credenciais configura uma tentativa de relay, não prova conectividade. Verifique a rota selecionada em `getStats()` e teste em redes reais.
 
 ## Antes de tornar público
 

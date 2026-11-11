@@ -1,4 +1,5 @@
 import type { CaptureSettings, CodecPref, Fps, Resolution } from './types';
+import { logWebRtcFailure } from './webrtc';
 
 export const RES: Record<Resolution, { w: number; h: number; label: string }> = {
   '720p': { w: 1280, h: 720, label: '720p' },
@@ -161,6 +162,7 @@ export class AudioMixer {
   private sysSource?: MediaStreamAudioSourceNode;
   private micSource?: MediaStreamAudioSourceNode;
   private micStream?: MediaStream;
+  private closed = false;
 
   constructor() {
     this.sysGain.connect(this.master);
@@ -194,11 +196,18 @@ export class AudioMixer {
       return;
     }
     if (!this.micStream) {
-      this.micStream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
-      this.micSource = this.ctx.createMediaStreamSource(this.micStream);
-      this.micSource.connect(this.micGain);
+      try {
+        const source = this.ctx.createMediaStreamSource(stream);
+        source.connect(this.micGain);
+        this.micStream = stream;
+        this.micSource = source;
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw error;
+      }
     }
     this.micGain.gain.value = 1;
   }
@@ -208,8 +217,13 @@ export class AudioMixer {
   }
 
   close() {
+    if (this.closed) return;
+    this.closed = true;
     this.micStream?.getTracks().forEach((t) => t.stop());
-    void this.ctx.close();
+    this.sysSource?.disconnect();
+    this.micSource?.disconnect();
+    this.dest.stream.getTracks().forEach((track) => track.stop());
+    void this.ctx.close().catch((error: unknown) => logWebRtcFailure('audio.close', error));
   }
 }
 

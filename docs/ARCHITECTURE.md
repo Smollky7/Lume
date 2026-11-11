@@ -12,8 +12,9 @@
 1. O host pede captura ao navegador por `getDisplayMedia`; vídeo e faixas de áudio disponíveis são misturados localmente.
 2. `room:create` cria um ID aleatório de 128 bits, um token de host e, opcionalmente, um hash/salt de senha.
 3. Cada espectador autorizado recebe configuração ICE e entra na sala. O host cria um `RTCPeerConnection` independente para cada espectador.
-4. Ofertas, respostas e candidatos ICE passam pelo Socket.IO após validação. Áudio/vídeo seguem diretamente entre navegadores ou por TURN.
-5. Ao encerrar, o servidor remove a sala e atualiza os clientes. Na perda do host, há 30 segundos para retomar usando o token.
+4. Ofertas, respostas e candidatos ICE passam pelo Socket.IO após validação. Cada peer serializa as operações SDP; candidatos recebidos antes da descrição remota ficam enfileirados até a negociação estar pronta.
+5. Áudio/vídeo seguem diretamente entre navegadores ou por TURN. As credenciais dinâmicas são validadas e respeitam o período de validade conhecido antes de serem reutilizadas.
+6. Ao encerrar, o servidor remove a sala e atualiza os clientes. Na perda do host, há 30 segundos para retomar usando o token.
 
 O upload do host cresce com o número de espectadores. Não há SFU, gravação nem armazenamento de mídia.
 

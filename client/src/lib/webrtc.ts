@@ -1,3 +1,9 @@
+export function logWebRtcFailure(operation: string, error: unknown): void {
+  if (!import.meta.env.DEV) return;
+  const name = error instanceof Error && error.name ? error.name : 'UnknownError';
+  console.debug(`[webrtc] ${operation} failed (${name})`);
+}
+
 /** Ajusta o fmtp do Opus: estéreo, FEC e bitrate alto (música/jogos). */
 export function tuneOpus(sdp: string): string {
   const rtpmap = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);

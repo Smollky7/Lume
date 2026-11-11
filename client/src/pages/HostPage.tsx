@@ -81,10 +81,14 @@ export default function HostPage() {
   const pickScreen = useCallback(async () => {
     setError('');
     setBusy(true);
+    let captured: MediaStream | undefined;
+    let mixer: AudioMixer | undefined;
     try {
       stream?.getTracks().forEach((t) => t.stop());
       mixerRef.current?.close();
-      const { stream: display, level } = await captureScreen(settings);
+      const result = await captureScreen(settings);
+      const display = (captured = result.stream);
+      const { level } = result;
       if (level > 0) {
         toast(
           'warn',
@@ -93,10 +97,11 @@ export default function HostPage() {
             : 'A captura só abriu em modo mínimo, sem áudio do sistema.',
         );
       }
-      const mixer = new AudioMixer();
-      await mixer.resume();
-      const gotAudio = mixer.attachSystem(display);
-      mixerRef.current = mixer;
+      const audioMixer = new AudioMixer();
+      mixer = audioMixer;
+      await audioMixer.resume();
+      const gotAudio = audioMixer.attachSystem(display);
+      mixerRef.current = audioMixer;
       setHasSystemAudio(gotAudio);
       if (settings.systemAudio && !gotAudio) {
         toast(
@@ -106,7 +111,7 @@ export default function HostPage() {
       }
       if (settings.mic) {
         try {
-          await mixer.setMic(true);
+          await audioMixer.setMic(true);
           setMicOn(true);
         } catch (e) {
           toast('error', describeMicError(e));
@@ -117,7 +122,7 @@ export default function HostPage() {
       display.getVideoTracks()[0].addEventListener('ended', () => {
         if (bcRef.current) bcRef.current.captureEnded();
         else {
-          mixer.close();
+          audioMixer.close();
           setStream(null);
           setPhase('idle');
           toast('info', 'Captura encerrada.');
@@ -126,6 +131,9 @@ export default function HostPage() {
       setStream(display);
       setPhase((p) => (p === 'live' ? p : 'preview'));
     } catch (e) {
+      captured?.getTracks().forEach((track) => track.stop());
+      mixer?.close();
+      mixerRef.current = null;
       setError(describeCaptureError(e));
     } finally {
       setBusy(false);
@@ -409,7 +417,7 @@ export default function HostPage() {
               </div>
               {!hasTurn && (
                 <p className="hint warnline">
-                  Este servidor não tem TURN configurado. Se quem assiste estiver atrás de CGNAT/NAT restrito, o vídeo não conecta (veja o README).
+                  O servidor não forneceu credenciais TURN. Se quem assiste estiver atrás de CGNAT/NAT restrito, o vídeo pode não conectar (veja o README).
                 </p>
               )}
               <ul className="viewers">
@@ -425,7 +433,8 @@ export default function HostPage() {
                     {v.connection !== 'connected' && now - v.since > 15000 && (
                       <div className="v-stats">
                         <span className="warnline">
-                          Sem vídeo para {v.name} há mais de 15 s{hasTurn ? '.' : ': provável NAT/CGNAT — configure um servidor TURN.'}
+                          Sem vídeo para {v.name} há mais de 15 s
+                          {hasTurn ? '; verifique ICE/rede e a rota nos diagnósticos.' : ': NAT/CGNAT é uma possibilidade — configure TURN e teste a conectividade.'}
                         </span>
                       </div>
                     )}
