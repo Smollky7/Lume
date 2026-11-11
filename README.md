@@ -1,71 +1,180 @@
 # Lume
 
-Compartilhamento de tela pelo navegador, com transporte de mídia WebRTC peer-to-peer e sinalização Socket.IO. O Lume também oferece uma lista de transmissões para Discord Activities; a captura e o player abrem no navegador externo porque o proxy de Activities não transporta WebRTC.
+**Real-time screen sharing, powered by WebRTC.**
+
+Uma aplicação de compartilhamento de tela em tempo real, desenvolvida para permitir transmissões diretamente pelo navegador, com baixa latência, controle de qualidade e suporte a múltiplos espectadores.
+
+O Lume utiliza **WebRTC para transportar áudio e vídeo entre navegadores** e **Socket.IO para gerenciar salas, participantes e sinalização**. Também conta com integração ao Discord Activities para descoberta de transmissões.
+
+> **Status:** Em desenvolvimento. O projeto possui testes automatizados, mas a transmissão em diferentes redes, o funcionamento no Discord e o uso de TURN ainda dependem de validação prática.
 
 ## Funcionalidades
 
-- Criação de salas com link e senha opcional.
-- Transmissão de vídeo e áudio do sistema/microfone quando o navegador oferece suporte.
-- Vários espectadores por transmissão, com limite configurável.
-- Reconexão do host por token de uso restrito e encerramento automático após período de tolerância.
-- Ajustes de resolução, FPS, codec, qualidade do espectador e tela cheia.
-- Lista efêmera pública de até quatro transmissões por chave de Activity; o ID não comprova participação na chamada.
+- **Compartilhamento de tela:** transmissão de vídeo e áudio do sistema ou microfone, conforme o suporte do navegador.
+- **Salas compartilháveis:** criação de salas com links e proteção opcional por senha.
+- **Múltiplos espectadores:** conexões WebRTC independentes, com limite configurável.
+- **Qualidade ajustável:** configurações de resolução, FPS, codec e qualidade de reprodução.
+- **Reconexão automática:** recuperação de sessões do host dentro de um período de tolerância.
+- **Discord Activities:** descoberta de até quatro transmissões por instância, utilizando uma lista pública e temporária.
+- **Controles de reprodução:** opções de visualização e tela cheia.
 
-## Capturas de tela
+## Tecnologias
 
-Capturas reais da interface serão adicionadas após validação em navegador e Discord. Nenhuma imagem de demonstração está incluída neste repositório.
+| Camada | Tecnologias |
+|---|---|
+| Frontend | React, TypeScript, Vite |
+| Backend | Node.js, Express |
+| Comunicação em tempo real | Socket.IO |
+| Transmissão de mídia | WebRTC |
+| Integração | Discord Embedded App SDK |
+| Infraestrutura | Docker, Vercel, Render |
 
-## Stack
+## Como funciona
 
-- Cliente: React, TypeScript e Vite.
-- Sinalização: Node.js, Express e Socket.IO.
-- Mídia: WebRTC no navegador; o servidor não recebe nem armazena áudio ou vídeo.
-- Integração: Discord Embedded App SDK e comando Primary Entry Point.
+O Lume separa a sinalização do transporte de mídia.
 
-## Requisitos
+1. O host cria uma sala por meio do backend.
+2. O servidor registra a sala e disponibiliza um identificador compartilhável.
+3. Os espectadores entram utilizando o link e, quando necessário, a senha.
+4. O Socket.IO coordena a troca de ofertas SDP e candidatos ICE.
+5. O WebRTC estabelece as conexões para transmitir áudio e vídeo.
+6. Quando necessário e configurado, um servidor TURN pode retransmitir o tráfego de mídia.
 
-- Node.js `20.19+` ou `22.12+`.
-- Navegador com `getDisplayMedia` para transmitir; a captura exige HTTPS, exceto em `localhost`.
-- Para publicar uma Discord Activity: aplicação configurada no Discord Developer Portal, frontend HTTPS e backend Socket.IO acessível.
-- TURN é recomendado para redes com NAT/CGNAT restritivo.
+O backend **não recebe nem armazena o conteúdo de áudio ou vídeo**. A mídia utiliza conexões WebRTC entre os participantes, diretamente ou por um relay TURN.
 
-## Desenvolvimento
+Cada espectador possui sua própria conexão WebRTC com o host. Por isso, o consumo de upload do transmissor aumenta conforme o número de espectadores.
 
-```sh
+Mais detalhes em [Arquitetura](docs/ARCHITECTURE.md).
+
+## Prévia da interface
+
+Capturas reais da aplicação serão adicionadas futuramente.
+
+## Executando localmente
+
+### Pré-requisitos
+
+- Node.js `20.19+` ou `22.12+`, conforme a faixa de versões suportada pelo projeto.
+- npm.
+- Navegador compatível com WebRTC e `getDisplayMedia`.
+
+Clone o repositório:
+
+```bash
+git clone https://github.com/Smollky7/Lume.git
+cd Lume
+```
+
+Instale as dependências:
+
+```bash
 npm ci
+```
+
+Crie o arquivo de configuração local:
+
+```bash
 cp .env.example .env
+```
+
+Configure as variáveis necessárias conforme o arquivo `.env.example`.
+
+Inicie o ambiente de desenvolvimento:
+
+```bash
 npm run dev
 ```
 
-O cliente abre em `http://localhost:5173` e o backend em `http://localhost:3000`. Os comandos de qualidade são:
+Serviços locais:
 
-```sh
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:3000`
+
+A captura de tela exige um contexto seguro (HTTPS), com exceções para ambientes locais como `localhost`.
+
+## Qualidade de código
+
+O projeto possui verificações automatizadas de lint, tipos, testes e build.
+
+```bash
 npm run lint
 npm run typecheck
 npm test
 npm run build
 ```
 
-O build de produção fica em `client/dist` e `server/dist`; use `npm start` para iniciar o backend compilado. Configure opções de ICE/STUN/TURN no ambiente do servidor, nunca em variáveis `VITE_*`. Veja [.env.example](.env.example) e [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+Os testes automatizados abrangem regras de salas, sinalização, autorização de operações, limites de recursos e tratamento de configurações ICE.
 
-Consulte [docs/TESTING.md](docs/TESTING.md) para os testes automatizados e o roteiro manual.
+Consulte [Testes](docs/TESTING.md) para conhecer os cenários cobertos e os testes manuais ainda necessários.
 
-## Arquitetura e deploy
+## Integração com Discord
 
-O servidor mantém salas e a lista da Activity em memória. Uma sala usa um host e até `MAX_VIEWERS` espectadores; cada espectador recebe uma conexão P2P independente. O backend apenas valida e retransmite sinalização. Escalar horizontalmente exige estado compartilhado e um adapter Socket.IO.
+O Lume possui integração com Discord Activities, permitindo visualizar uma lista temporária de transmissões associadas a uma instância.
 
-As instruções de produção ficam em [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); o desenho dos fluxos está em [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Configure o frontend pela Vercel e o backend pelo Render ou use Docker Compose em uma máquina própria.
+A Activity funciona como ponto de descoberta. A captura e a reprodução são abertas no navegador externo devido às limitações do ambiente de proxy do Discord para o fluxo WebRTC utilizado pelo projeto.
 
-## Discord Activity
+A lista de transmissões é pública para quem conhece o identificador da instância. O `instanceId` não constitui autenticação nem comprovação de participação em uma chamada.
 
-Configure URL Mappings no Developer Portal: `/backend` aponta ao host do backend e `/` ao frontend. O código chama o proxy usando `/.proxy/backend`; configure o mapping `backend` antes do mapping `/`. Configure `VITE_DISCORD_CLIENT_ID`, `VITE_PUBLIC_URL`, `VITE_BACKEND_URL` no build do frontend, e `FRONTEND_URL` no backend.
+A configuração requer uma aplicação no Discord Developer Portal e URL Mappings para frontend e backend.
 
-O `instanceId` organiza a lista da Activity, mas não autentica uma pessoa nem prova que ela participa daquela chamada. As salas anunciadas sem senha são acessíveis a quem obtiver o ID/link. Veja as implicações em [docs/SECURITY.md](docs/SECURITY.md).
+Consulte [Deploy](docs/DEPLOYMENT.md) e [Segurança](docs/SECURITY.md).
+
+## Infraestrutura e deploy
+
+A arquitetura atual utiliza armazenamento em memória para gerenciar salas, sessões e limites de requisições.
+
+O projeto contempla configurações para:
+
+- **Vercel:** frontend.
+- **Render:** backend.
+- **Docker Compose:** execução em infraestrutura própria.
+
+A implantação atual é voltada a uma única instância do backend. Escalabilidade horizontal exigiria estado compartilhado e adaptação da comunicação Socket.IO.
+
+Instruções em [Deploy](docs/DEPLOYMENT.md).
 
 ## Segurança e limitações
 
-Não versione `.env`, chaves TURN, tokens do Discord ou segredos. Variáveis `VITE_` são públicas no bundle. Limites e orientações de publicação estão em [docs/SECURITY.md](docs/SECURITY.md); restrições reais de navegador, Discord, NAT e escala estão em [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+O projeto incorpora validações de entrada, controles de acesso às operações de host, limites de requisições e gerenciamento de sessões.
 
-Este repositório não inclui uma demonstração pública permanente. Nenhum teste local equivale a uma validação real do Discord, de TURN ou de um deploy público.
+Algumas limitações permanecem:
 
-O projeto está em desenvolvimento. A publicação do código, uma licença open source, contribuições externas e uso em produção são decisões distintas; este repositório não inclui uma licença.
+- A lista da Discord Activity não autentica os participantes.
+- O funcionamento de áudio e captura varia conforme navegador e sistema operacional.
+- A conectividade entre redes restritivas pode exigir TURN.
+- O estado das salas é mantido em memória.
+- Existem advisories conhecidos em dependências transitivas, documentados na revisão técnica.
+
+Informações adicionais:
+
+- [Segurança](docs/SECURITY.md)
+- [Limitações conhecidas](docs/KNOWN_LIMITATIONS.md)
+- [Revisão técnica](docs/FINAL_TECHNICAL_REVIEW.md)
+
+## Roadmap
+
+- [x] Compartilhamento de tela baseado em WebRTC
+- [x] Gerenciamento de salas com Socket.IO
+- [x] Proteção opcional por senha
+- [x] Suporte a múltiplos espectadores
+- [x] Configurações de qualidade
+- [x] Integração de descoberta com Discord Activities
+- [x] Testes automatizados de backend
+- [ ] Validar transmissão entre diferentes redes e dispositivos
+- [ ] Validar conectividade TURN em ambiente real
+- [ ] Validar fluxos completos da Discord Activity
+- [ ] Adicionar capturas de tela e demonstração pública
+- [ ] Evoluir a observabilidade e a experiência de reconexão
+
+## Autor
+
+Desenvolvido por **Jardel Sousa**.
+
+- [GitHub](https://github.com/Smollky7)
+- [Portfólio](https://www.jardelsousadev.com.br)
+
+---
+
+**Lume** é um projeto em evolução, desenvolvido para explorar comunicação em tempo real, arquitetura WebRTC e experiências de compartilhamento de tela na web.
+
+*O repositório ainda não possui uma licença open source definida.*
